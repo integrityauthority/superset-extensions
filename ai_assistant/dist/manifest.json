@@ -1,0 +1,34 @@
+{
+  "id": "ai_assistant",
+  "name": "Vambery AI Agent",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "frontend": {
+    "contributions": {
+      "commands": [],
+      "views": {
+        "sqllab": {
+          "rightSidebar": [
+            {
+              "id": "ai_assistant.chatPanel",
+              "name": "Vambery AI Agent"
+            }
+          ]
+        }
+      },
+      "menus": {}
+    },
+    "moduleFederation": {
+      "exposes": [
+        "./index"
+      ]
+    },
+    "remoteEntry": "remoteEntry.6d15f17e8e9d025b5712.js"
+  },
+  "backend": {
+    "entryPoints": [
+      "ai_assistant.entrypoint"
+    ]
+  },
+  "permissions": []
+}

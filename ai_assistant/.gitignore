@@ -1,8 +1,8 @@
 # Dependencies
 node_modules/
 
-# Build outputs
-dist/
+# Build outputs (dist/ is committed for server deployment — rebuild with ../build-extensions.sh)
+# dist/
 *.supx
 
 # Python

@@ -4,8 +4,8 @@ __pycache__/
 *.pyc
 *.egg-info/
 
-# Build artifacts
-dist/
+# Build artifacts (dist/ is committed for server deployment — rebuild with build-extensions.sh)
+# dist/
 build/
 *.js.map
 
