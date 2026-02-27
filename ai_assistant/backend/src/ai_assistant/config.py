@@ -39,11 +39,28 @@ Example superset_config.py entry:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from flask import current_app
 
 logger = logging.getLogger(__name__)
+
+# Environment variable mapping for Docker / .env based deployments.
+# These are used as fallback when AI_ASSISTANT is not set in superset_config.py.
+ENV_MAPPING: dict[str, str] = {
+    "provider": "AI_PROVIDER",
+    "system_prompt_extra": "AI_SYSTEM_PROMPT_EXTRA",
+    "max_tool_rounds": "AI_MAX_TOOL_ROUNDS",
+    "max_sample_rows": "AI_MAX_SAMPLE_ROWS",
+}
+
+AZURE_ENV_MAPPING: dict[str, str] = {
+    "api_key": "AZURE_OPENAI_API_KEY",
+    "api_version": "AZURE_OPENAI_API_VERSION",
+    "azure_endpoint": "AZURE_OPENAI_ENDPOINT",
+    "deployment_name": "AZURE_OPENAI_DEPLOYMENT",
+}
 
 # Default configuration values
 DEFAULTS: dict[str, Any] = {
@@ -60,9 +77,50 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
+def _read_env_config() -> dict[str, Any]:
+    """Build config dict from environment variables (fallback for Docker deployments)."""
+    env_config: dict[str, Any] = {}
+
+    for config_key, env_var in ENV_MAPPING.items():
+        val = os.environ.get(env_var)
+        if val is not None:
+            # Convert numeric values
+            if config_key in ("max_tool_rounds", "max_sample_rows"):
+                try:
+                    env_config[config_key] = int(val)
+                except ValueError:
+                    logger.warning("Invalid integer for %s: %s", env_var, val)
+            else:
+                env_config[config_key] = val
+
+    # Azure OpenAI env vars
+    azure_config: dict[str, str] = {}
+    for config_key, env_var in AZURE_ENV_MAPPING.items():
+        val = os.environ.get(env_var)
+        if val is not None:
+            azure_config[config_key] = val
+    if azure_config:
+        env_config["azure_openai"] = azure_config
+
+    return env_config
+
+
 def get_ai_config() -> dict[str, Any]:
-    """Get the Vambery AI Agent configuration from Superset config, merged with defaults."""
+    """Get the Vambery AI Agent configuration from Superset config, merged with defaults.
+
+    Priority (highest to lowest):
+    1. AI_ASSISTANT dict in superset_config.py
+    2. Environment variables (AZURE_OPENAI_API_KEY, etc.)
+    3. Built-in defaults
+    """
     user_config = current_app.config.get("AI_ASSISTANT", {})
+
+    # If no superset_config.py entry, fall back to environment variables
+    if not user_config:
+        user_config = _read_env_config()
+        if user_config:
+            logger.info("AI_ASSISTANT config loaded from environment variables")
+
     merged = {**DEFAULTS, **user_config}
 
     # Deep merge nested dicts (e.g. azure_openai)
