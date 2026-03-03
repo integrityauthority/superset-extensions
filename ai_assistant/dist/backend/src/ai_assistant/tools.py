@@ -588,6 +588,31 @@ def tool_get_distinct_values(
         return {"error": str(ex)}
 
 
+def _validate_sql_syntax(sql: str, dialect: str | None = None) -> str | None:
+    """
+    Validate SQL syntax using sqlglot. Returns error message if invalid,
+    None if valid. This catches obvious syntax errors before hitting the DB.
+    """
+    try:
+        import sqlglot
+
+        sqlglot_dialect = None
+        if dialect and "mssql" in dialect.lower():
+            sqlglot_dialect = "tsql"
+        elif dialect and "postgres" in dialect.lower():
+            sqlglot_dialect = "postgres"
+        elif dialect and "mysql" in dialect.lower():
+            sqlglot_dialect = "mysql"
+
+        sqlglot.transpile(sql, read=sqlglot_dialect)
+        return None
+    except sqlglot.errors.ParseError as e:
+        return f"SQL syntax error: {str(e)}"
+    except Exception:
+        # If sqlglot itself fails, don't block — let the DB handle it
+        return None
+
+
 def tool_execute_sql(
     database_id: int,
     sql: str,
@@ -606,7 +631,12 @@ def tool_execute_sql(
                 "error": "Only SELECT and WITH (CTE) queries are allowed for safety"
             }
 
+        # Validate SQL syntax before executing
         database = _get_database(database_id)
+        dialect = database.backend if database else None
+        syntax_error = _validate_sql_syntax(sql, dialect)
+        if syntax_error:
+            return {"error": syntax_error, "sql": sql}
 
         from superset_core.api.types import QueryOptions
 
@@ -640,6 +670,35 @@ VIZ_TYPE_MAP = {
     "pie": "pie",
     "table": "table",
 }
+
+
+def _strip_trailing_order_by(sql: str) -> str:
+    """
+    Strip trailing ORDER BY clause from SQL. MSSQL does not allow ORDER BY
+    in subqueries/derived tables/views unless TOP or OFFSET is specified.
+    Since Superset wraps virtual dataset SQL in a subquery, ORDER BY causes
+    errors on MSSQL.
+    """
+    import re
+
+    # Match ORDER BY ... at the end of the SQL, possibly followed by a semicolon
+    # Handles multi-line and case-insensitive
+    cleaned = re.sub(
+        r'\bORDER\s+BY\s+[^;]*?(?:;?\s*)$',
+        '',
+        sql.strip(),
+        flags=re.IGNORECASE | re.DOTALL,
+    ).strip()
+    return cleaned or sql
+
+
+def _is_mssql(database_id: int) -> bool:
+    """Check if the database is MSSQL."""
+    try:
+        database = _get_database(database_id)
+        return "mssql" in database.backend.lower()
+    except Exception:
+        return False
 
 
 def _find_existing_dataset(
@@ -768,11 +827,22 @@ def tool_create_chart(
         # Sanitize dataset name from chart name
         safe_name = f"ai_{chart_name.replace(' ', '_')[:80]}"
 
+        # MSSQL: strip ORDER BY from virtual dataset SQL — MSSQL disallows
+        # ORDER BY in subqueries/derived tables unless TOP/OFFSET is present,
+        # and Superset wraps virtual dataset SQL in a subquery for charting.
+        dataset_sql = sql
+        if _is_mssql(database_id):
+            dataset_sql = _strip_trailing_order_by(sql)
+            if dataset_sql != sql:
+                logger.info(
+                    "Stripped ORDER BY from chart SQL for MSSQL compatibility"
+                )
+
         # Step 1: Try to find existing dataset, else create virtual one
         dataset = _find_existing_dataset(database_id, safe_name, schema_name)
         if not dataset:
             dataset = _create_virtual_dataset(
-                database_id, sql, safe_name, schema_name
+                database_id, dataset_sql, safe_name, schema_name
             )
         dataset_id_val: int = dataset.id
 

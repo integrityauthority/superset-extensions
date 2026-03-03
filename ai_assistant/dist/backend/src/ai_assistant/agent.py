@@ -35,6 +35,20 @@ from ai_assistant.tools import execute_tool, TOOLS_WITH_ACTIONS, TOOL_DEFINITION
 
 logger = logging.getLogger(__name__)
 
+
+def _detect_db_engine_type(database_id: int) -> str | None:
+    """Detect the SQL dialect/engine type from the Superset Database model."""
+    try:
+        from superset.extensions import db
+        from superset.models.core import Database
+
+        database = db.session.query(Database).filter_by(id=database_id).first()
+        if database:
+            return database.backend
+    except Exception as ex:
+        logger.debug("Could not detect DB engine type for db %s: %s", database_id, ex)
+    return None
+
 SYSTEM_PROMPT = """\
 You are an AI SQL assistant integrated into Apache Superset's SQL Lab.
 You help users write, debug, and optimize SQL queries, and create visualizations.
@@ -118,16 +132,32 @@ def build_system_prompt(
     schema_name: str | None = None,
     current_sql: str | None = None,
     extra_prompt: str = "",
+    db_engine_type: str | None = None,
 ) -> str:
     """Build the system prompt with context about the current environment."""
     parts = [SYSTEM_PROMPT]
 
-    if database_name or schema_name:
+    if database_name or schema_name or db_engine_type:
         context = "\n## Current Context\n"
         if database_name:
             context += f"- Connected database: {database_name}\n"
         if schema_name:
             context += f"- Selected schema: {schema_name}\n"
+        if db_engine_type:
+            context += f"- SQL dialect: {db_engine_type}\n"
+            if "mssql" in db_engine_type.lower():
+                context += (
+                    "- **MSSQL rules**: Use TOP instead of LIMIT, use square brackets "
+                    "[column] for identifiers, ORDER BY is NOT allowed in subqueries "
+                    "or derived tables unless TOP/OFFSET is specified, use "
+                    "FORMAT(date, 'yyyy-MM') for date formatting, use STRING_AGG "
+                    "instead of GROUP_CONCAT.\n"
+                )
+            elif "postgres" in db_engine_type.lower():
+                context += (
+                    "- **PostgreSQL rules**: Use LIMIT instead of TOP, use double "
+                    "quotes for identifiers, use TO_CHAR for date formatting.\n"
+                )
         parts.append(context)
 
     if current_sql and current_sql.strip():
@@ -175,12 +205,16 @@ def run_agent(
     max_rounds = config.get("max_tool_rounds", 10)
     max_sample_rows = config.get("max_sample_rows", 20)
 
+    # Detect database engine type for dialect-specific prompting
+    db_engine_type = _detect_db_engine_type(database_id)
+
     # Build system prompt with context
     system_prompt = build_system_prompt(
         database_name=database_name,
         schema_name=schema_name,
         current_sql=current_sql,
         extra_prompt=config.get("system_prompt_extra", ""),
+        db_engine_type=db_engine_type,
     )
 
     # Prepare conversation with system prompt
@@ -339,11 +373,15 @@ def run_agent_stream(
     max_rounds = config.get("max_tool_rounds", 10)
     max_sample_rows = config.get("max_sample_rows", 20)
 
+    # Detect database engine type for dialect-specific prompting
+    db_engine_type = _detect_db_engine_type(database_id)
+
     system_prompt = build_system_prompt(
         database_name=database_name,
         schema_name=schema_name,
         current_sql=current_sql,
         extra_prompt=config.get("system_prompt_extra", ""),
+        db_engine_type=db_engine_type,
     )
 
     llm_messages: list[dict[str, Any]] = [

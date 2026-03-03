@@ -219,7 +219,7 @@ We welcome contributions! Here's how:
 - [ ] Support for more chart types (scatter, heatmap, geospatial)
 - [ ] Natural language filters and drill-downs
 - [ ] Dataset recommendations based on user queries
-- [ ] Support for more LLM providers (Anthropic Claude, Google Gemini, local models)
+- [ ] Support for more LLM providers (Anthropic Claude, Google Gemini, local models, Responses API)
 
 ### Status
 
