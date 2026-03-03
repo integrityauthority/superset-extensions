@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Apache Superset Community
+    url: https://github.com/apache/superset/discussions
+    about: General Superset questions and discussions
