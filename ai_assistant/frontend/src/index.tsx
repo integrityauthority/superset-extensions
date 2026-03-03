@@ -29,7 +29,7 @@ import ChatPanel from "./ChatPanel";
 
 export const activate = (context: core.ExtensionContext) => {
   context.disposables.push(
-    core.registerViewProvider("ai_assistant.chatPanel", () => <ChatPanel />)
+    core.registerViewProvider("vambery_ai_assistant.chatPanel", () => <ChatPanel />)
   );
   console.log("[Vambery AI Agent] Extension activated");
 };

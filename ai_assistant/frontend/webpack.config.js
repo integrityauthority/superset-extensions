@@ -19,7 +19,7 @@ module.exports = (env, argv) => {
       filename: isProd ? undefined : "[name].[contenthash].js",
       chunkFilename: "[name].[contenthash].js",
       path: path.resolve(__dirname, "dist"),
-      publicPath: `/api/v1/extensions/${packageConfig.name}/`,
+      publicPath: "/api/v1/extensions/integrityauthority/vambery-ai-assistant/",
     },
     resolve: {
       extensions: [".ts", ".tsx", ".js", ".jsx"],
@@ -39,7 +39,7 @@ module.exports = (env, argv) => {
     },
     plugins: [
       new ModuleFederationPlugin({
-        name: "ai_assistant",
+        name: "vambery_ai_assistant",
         filename: "remoteEntry.[contenthash].js",
         exposes: {
           "./index": "./src/index.tsx",

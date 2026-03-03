@@ -27,6 +27,12 @@
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { sqlLab, authentication, useTheme, SupersetTheme } from "@apache-superset/core";
+import ReactMarkdown from "react-markdown";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import {
+  oneDark,
+  oneLight,
+} from "react-syntax-highlighter/dist/esm/styles/prism";
 
 // --------------------------------------------------------------------------
 // Types
@@ -52,6 +58,12 @@ interface AgentStep {
 interface EditorAction {
   type: string;
   sql?: string;
+  // Chart creation action fields
+  action?: string;
+  url?: string;
+  chart_name?: string;
+  viz_type?: string;
+  saved?: boolean;
 }
 
 interface ChatContext {
@@ -192,8 +204,10 @@ function getStyles(t: SupersetTheme) {
       border: isUser ? "none" : `1px solid ${t.colorBorderSecondary}`,
       maxWidth: "100%",
       lineHeight: t.lineHeight,
-      whiteSpace: "pre-wrap" as const,
-      wordBreak: "break-word" as const,
+      // User messages: preserve whitespace. Assistant: markdown handles formatting.
+      ...(isUser
+        ? { whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const }
+        : { wordBreak: "break-word" as const }),
     }),
     stepsContainer: {
       marginTop: t.marginXS,
@@ -332,8 +346,214 @@ function getStyles(t: SupersetTheme) {
       alignItems: "center",
       gap: 6,
     },
+    // Markdown rendering styles
+    markdownContainer: {
+      lineHeight: 1.6,
+      wordBreak: "break-word" as const,
+      "& > *:first-child": { marginTop: 0 },
+      "& > *:last-child": { marginBottom: 0 },
+    },
+    markdownCodeBlock: {
+      borderRadius: t.borderRadiusSM,
+      fontSize: t.fontSizeSM - 1,
+      margin: `${t.marginXS}px 0`,
+      overflowX: "auto" as const,
+    },
+    markdownInlineCode: {
+      backgroundColor: t.colorFillSecondary,
+      borderRadius: t.borderRadiusSM - 1,
+      padding: "1px 5px",
+      fontSize: "0.9em",
+      fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
+    },
+    markdownTable: {
+      borderCollapse: "collapse" as const,
+      width: "100%",
+      margin: `${t.marginXS}px 0`,
+      fontSize: t.fontSizeSM,
+    },
+    markdownTh: {
+      backgroundColor: t.colorFillQuaternary,
+      border: `1px solid ${t.colorBorderSecondary}`,
+      padding: `${t.paddingXS - 1}px ${t.paddingXS + 2}px`,
+      textAlign: "left" as const,
+      fontWeight: t.fontWeightStrong,
+    },
+    markdownTd: {
+      border: `1px solid ${t.colorBorderSecondary}`,
+      padding: `${t.paddingXS - 1}px ${t.paddingXS + 2}px`,
+    },
+    markdownBlockquote: {
+      borderLeft: `3px solid ${t.colorPrimary}`,
+      margin: `${t.marginXS}px 0`,
+      padding: `${t.paddingXS}px ${t.paddingSM}px`,
+      backgroundColor: t.colorFillQuaternary,
+      color: t.colorTextSecondary,
+    },
+    markdownHr: {
+      border: "none",
+      borderTop: `1px solid ${t.colorBorderSecondary}`,
+      margin: `${t.marginSM}px 0`,
+    },
+    markdownLink: {
+      color: t.colorPrimary,
+      textDecoration: "none" as const,
+    },
+    codeBlockWrapper: {
+      position: "relative" as const,
+    },
+    sendToEditorButton: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 4,
+      padding: `2px ${t.paddingSM}px`,
+      backgroundColor: t.colorPrimary,
+      color: "#fff",
+      border: "none",
+      borderRadius: t.borderRadiusSM,
+      cursor: "pointer",
+      fontSize: t.fontSizeSM - 1,
+      fontWeight: t.fontWeightStrong,
+      marginTop: 2,
+      marginBottom: t.marginXS,
+      opacity: 0.9,
+    },
+    chartButton: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      marginTop: t.marginXS,
+      marginBottom: t.marginSM,
+      padding: `${t.paddingXS - 2}px ${t.paddingSM + 2}px`,
+      backgroundColor: t.colorPrimary,
+      color: "#fff",
+      border: "none",
+      borderRadius: t.borderRadiusSM,
+      cursor: "pointer",
+      fontSize: t.fontSizeSM,
+      fontWeight: t.fontWeightStrong,
+    },
   };
 }
+
+// --------------------------------------------------------------------------
+// Markdown Message Renderer
+// --------------------------------------------------------------------------
+
+interface MarkdownMessageProps {
+  content: string;
+  styles: ReturnType<typeof getStyles>;
+  isDarkTheme: boolean;
+  onSendToEditor?: (sql: string) => void;
+}
+
+const MarkdownMessage: React.FC<MarkdownMessageProps> = ({
+  content,
+  styles: s,
+  isDarkTheme,
+  onSendToEditor,
+}) => {
+  return (
+    <ReactMarkdown
+      components={{
+        code({ className, children, ...props }) {
+          const match = /language-(\w+)/.exec(className || "");
+          const codeString = String(children).replace(/\n$/, "");
+          const isSql =
+            (match && match[1] === "sql") ||
+            (!match && codeString.includes("\n") && /^\s*(SELECT|WITH|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\b/i.test(codeString));
+
+          // Block code (has language or multiple lines)
+          if (match || codeString.includes("\n")) {
+            return (
+              <div style={s.codeBlockWrapper}>
+                <SyntaxHighlighter
+                  style={isDarkTheme ? oneDark : oneLight}
+                  language={match ? match[1] : "sql"}
+                  PreTag="div"
+                  customStyle={s.markdownCodeBlock}
+                >
+                  {codeString}
+                </SyntaxHighlighter>
+                {isSql && onSendToEditor && (
+                  <button
+                    type="button"
+                    style={s.sendToEditorButton}
+                    onClick={() => onSendToEditor(codeString)}
+                    title="Send this SQL to the editor and run it"
+                  >
+                    &#9654; Send to Editor
+                  </button>
+                )}
+              </div>
+            );
+          }
+
+          // Inline code
+          return (
+            <code style={s.markdownInlineCode} {...props}>
+              {children}
+            </code>
+          );
+        },
+        table({ children }) {
+          return <table style={s.markdownTable}>{children}</table>;
+        },
+        th({ children }) {
+          return <th style={s.markdownTh}>{children}</th>;
+        },
+        td({ children }) {
+          return <td style={s.markdownTd}>{children}</td>;
+        },
+        blockquote({ children }) {
+          return <blockquote style={s.markdownBlockquote}>{children}</blockquote>;
+        },
+        hr() {
+          return <hr style={s.markdownHr} />;
+        },
+        a({ href, children }) {
+          return (
+            <a
+              href={href}
+              style={s.markdownLink}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {children}
+            </a>
+          );
+        },
+        // Keep headings compact for sidebar chat
+        h1({ children }) {
+          return <h3 style={{ margin: "8px 0 4px" }}>{children}</h3>;
+        },
+        h2({ children }) {
+          return <h3 style={{ margin: "8px 0 4px" }}>{children}</h3>;
+        },
+        h3({ children }) {
+          return <h4 style={{ margin: "6px 0 3px" }}>{children}</h4>;
+        },
+        h4({ children }) {
+          return <h5 style={{ margin: "4px 0 2px" }}>{children}</h5>;
+        },
+        p({ children }) {
+          return <p style={{ margin: "4px 0" }}>{children}</p>;
+        },
+        ul({ children }) {
+          return <ul style={{ margin: "4px 0", paddingLeft: 20 }}>{children}</ul>;
+        },
+        ol({ children }) {
+          return <ol style={{ margin: "4px 0", paddingLeft: 20 }}>{children}</ol>;
+        },
+        li({ children }) {
+          return <li style={{ margin: "2px 0" }}>{children}</li>;
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+};
 
 // --------------------------------------------------------------------------
 // Component
@@ -342,6 +562,20 @@ function getStyles(t: SupersetTheme) {
 const ChatPanel: React.FC = () => {
   const theme = useTheme();
   const styles = useMemo(() => getStyles(theme), [theme]);
+  // Detect dark theme by checking if background is darker than midpoint
+  const isDarkTheme = useMemo(() => {
+    const bg = theme.colorBgLayout;
+    if (!bg) return false;
+    // Parse hex color to check luminance
+    const hex = bg.replace("#", "");
+    if (hex.length >= 6) {
+      const r = parseInt(hex.substring(0, 2), 16);
+      const g = parseInt(hex.substring(2, 4), 16);
+      const b = parseInt(hex.substring(4, 6), 16);
+      return (r * 299 + g * 587 + b * 114) / 1000 < 128;
+    }
+    return false;
+  }, [theme.colorBgLayout]);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -419,6 +653,14 @@ const ChatPanel: React.FC = () => {
         }
       }
     }
+
+    // Chart creation action — open explore URL in a new tab
+    if (action.action === "open_chart" && action.url) {
+      console.log("[Vambery AI] Opening chart:", action.chart_name, action.url);
+      window.open(action.url, "_blank");
+      return true;
+    }
+
     return false;
   }, []);
 
@@ -431,6 +673,11 @@ const ChatPanel: React.FC = () => {
       console.error("[Vambery AI] Failed to execute query:", e);
     }
   }, []);
+
+  // Send SQL to editor from a code block button
+  const handleSendToEditor = useCallback(async (sql: string) => {
+    await applyAction({ type: "set_editor_sql", sql });
+  }, [applyAction]);
 
   // Send message handler — uses SSE streaming
   const handleSend = useCallback(async () => {
@@ -603,14 +850,21 @@ const ChatPanel: React.FC = () => {
                   </div>
                 )}
 
-                {/* Response text — below the steps */}
+                {/* Response text — below the steps, rendered as markdown */}
                 {msg.error ? (
                   <div style={styles.errorBubble}>{msg.content}</div>
                 ) : (
-                  <div style={styles.messageBubble(false)}>{msg.content}</div>
+                  <div style={styles.messageBubble(false)}>
+                    <MarkdownMessage
+                      content={msg.content}
+                      styles={styles}
+                      isDarkTheme={isDarkTheme}
+                      onSendToEditor={handleSendToEditor}
+                    />
+                  </div>
                 )}
 
-                {/* "Re-run query" button at the bottom */}
+                {/* Action buttons at the bottom */}
                 {msg.hasRunnable && (
                   <button
                     style={styles.runQueryButton}
@@ -620,6 +874,19 @@ const ChatPanel: React.FC = () => {
                     &#9654; Re-run query
                   </button>
                 )}
+                {msg.actions &&
+                  msg.actions
+                    .filter((a) => a.action === "open_chart" && a.url)
+                    .map((chartAction, aIdx) => (
+                      <button
+                        key={`chart-${aIdx}`}
+                        style={styles.chartButton}
+                        onClick={() => window.open(chartAction.url, "_blank")}
+                        type="button"
+                      >
+                        &#x1F4CA; View Chart: {chartAction.chart_name || "Untitled"}
+                      </button>
+                    ))}
               </>
             )}
           </div>

@@ -1,6 +1,8 @@
 {
-  "id": "ai_assistant",
-  "name": "Vambery AI Agent",
+  "publisher": "integrityauthority",
+  "name": "vambery-ai-assistant",
+  "displayName": "Vambery AI Agent",
+  "id": "integrityauthority.vambery-ai-assistant",
   "version": "0.1.0",
   "license": "Apache-2.0",
   "frontend": {
@@ -10,7 +12,7 @@
         "sqllab": {
           "rightSidebar": [
             {
-              "id": "ai_assistant.chatPanel",
+              "id": "vambery_ai_assistant.chatPanel",
               "name": "Vambery AI Agent"
             }
           ]
@@ -19,11 +21,12 @@
       "menus": {}
     },
     "moduleFederation": {
+      "name": "vambery_ai_assistant",
       "exposes": [
         "./index"
       ]
     },
-    "remoteEntry": "remoteEntry.6d15f17e8e9d025b5712.js"
+    "remoteEntry": "remoteEntry.97743ce7109b728a4549.js"
   },
   "backend": {
     "entryPoints": [
