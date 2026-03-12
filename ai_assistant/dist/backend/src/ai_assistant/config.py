@@ -21,18 +21,24 @@ Vambery AI Agent Configuration.
 Reads Vambery AI Agent configuration from Superset's config (superset_config.py).
 Configuration is stored under the AI_ASSISTANT key.
 
+Supported providers: azure_openai, openai, ollama
+
 Example superset_config.py entry:
     AI_ASSISTANT = {
-        "provider": "azure_openai",
+        "provider": "azure_openai",  # or "openai" or "ollama"
         "azure_openai": {
             "api_key": "your-api-key",
             "api_version": "2025-03-01-preview",
             "azure_endpoint": "https://your-resource.openai.azure.com/",
             "deployment_name": "gpt-52",
         },
-        "system_prompt_extra": "",  # Additional instructions appended to system prompt
-        "max_tool_rounds": 10,      # Max number of tool-use round trips
-        "max_sample_rows": 20,      # Max rows returned by sample queries
+        "ollama": {
+            "base_url": "http://localhost:11434",
+            "model": "llama3.1",
+        },
+        "system_prompt_extra": "",
+        "max_tool_rounds": 10,
+        "max_sample_rows": 20,
     }
 """
 
@@ -62,6 +68,11 @@ AZURE_ENV_MAPPING: dict[str, str] = {
     "deployment_name": "AZURE_OPENAI_DEPLOYMENT",
 }
 
+OLLAMA_ENV_MAPPING: dict[str, str] = {
+    "base_url": "OLLAMA_BASE_URL",
+    "model": "OLLAMA_MODEL",
+}
+
 # Default configuration values
 DEFAULTS: dict[str, Any] = {
     "provider": "azure_openai",
@@ -71,42 +82,58 @@ DEFAULTS: dict[str, Any] = {
         "azure_endpoint": "",
         "deployment_name": "gpt-52",
     },
+    "ollama": {
+        "base_url": "http://localhost:11434",
+        "model": "llama3.1",
+    },
     "system_prompt_extra": "",
     "max_tool_rounds": 10,
     "max_sample_rows": 20,
 }
 
 
+def _read_provider_env(
+    mapping: dict[str, str],
+) -> dict[str, str]:
+    """Read provider-specific env vars into a config dict."""
+    config: dict[str, str] = {}
+    for config_key, env_var in mapping.items():
+        val = os.environ.get(env_var)
+        if val is not None:
+            config[config_key] = val
+    return config
+
+
 def _read_env_config() -> dict[str, Any]:
-    """Build config dict from environment variables (fallback for Docker deployments)."""
+    """Build config from environment variables (Docker fallback)."""
     env_config: dict[str, Any] = {}
 
     for config_key, env_var in ENV_MAPPING.items():
         val = os.environ.get(env_var)
         if val is not None:
-            # Convert numeric values
             if config_key in ("max_tool_rounds", "max_sample_rows"):
                 try:
                     env_config[config_key] = int(val)
                 except ValueError:
-                    logger.warning("Invalid integer for %s: %s", env_var, val)
+                    logger.warning(
+                        "Invalid integer for %s: %s", env_var, val
+                    )
             else:
                 env_config[config_key] = val
 
-    # Azure OpenAI env vars
-    azure_config: dict[str, str] = {}
-    for config_key, env_var in AZURE_ENV_MAPPING.items():
-        val = os.environ.get(env_var)
-        if val is not None:
-            azure_config[config_key] = val
-    if azure_config:
-        env_config["azure_openai"] = azure_config
+    azure = _read_provider_env(AZURE_ENV_MAPPING)
+    if azure:
+        env_config["azure_openai"] = azure
+
+    ollama = _read_provider_env(OLLAMA_ENV_MAPPING)
+    if ollama:
+        env_config["ollama"] = ollama
 
     return env_config
 
 
 def get_ai_config() -> dict[str, Any]:
-    """Get the Vambery AI Agent configuration from Superset config, merged with defaults.
+    """Get the merged Vambery AI Agent configuration.
 
     Priority (highest to lowest):
     1. AI_ASSISTANT dict in superset_config.py

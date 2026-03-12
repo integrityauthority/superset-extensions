@@ -72,6 +72,21 @@ interface ChatContext {
   schema: string | null;
   catalog: string | null;
   current_sql: string;
+  model_override?: string;
+}
+
+interface OllamaModel {
+  name: string;
+  size_gb?: number;
+  parameter_size?: string;
+  family?: string;
+  quantization?: string;
+}
+
+interface ModelsResponse {
+  provider: string;
+  models: OllamaModel[];
+  default_model: string;
 }
 
 // --------------------------------------------------------------------------
@@ -433,6 +448,41 @@ function getStyles(t: SupersetTheme) {
       fontSize: t.fontSizeSM,
       fontWeight: t.fontWeightStrong,
     },
+    modelSelectorContainer: {
+      display: "flex",
+      alignItems: "center",
+      padding: `${t.paddingXS - 1}px ${t.padding}px`,
+      borderBottom: `1px solid ${t.colorBorderSecondary}`,
+      backgroundColor: t.colorBgContainer,
+      gap: t.sizeXS,
+      fontSize: t.fontSizeSM,
+    },
+    modelSelect: {
+      flex: 1,
+      padding: `${t.paddingXS - 2}px ${t.paddingXS}px`,
+      border: `1px solid ${t.colorBorder}`,
+      borderRadius: t.borderRadiusSM,
+      backgroundColor: t.colorBgContainer,
+      color: t.colorText,
+      fontSize: t.fontSizeSM - 1,
+      outline: "none",
+      cursor: "pointer",
+      maxWidth: "100%",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+    },
+    modelLabel: {
+      color: t.colorTextSecondary,
+      fontSize: t.fontSizeSM - 1,
+      whiteSpace: "nowrap" as const,
+      flexShrink: 0,
+    },
+    modelBadge: {
+      fontSize: t.fontSizeSM - 2,
+      color: t.colorTextTertiary,
+      whiteSpace: "nowrap" as const,
+      flexShrink: 0,
+    },
   };
 }
 
@@ -585,6 +635,13 @@ const ChatPanel: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Model selector state
+  const [availableModels, setAvailableModels] = useState<OllamaModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [defaultModel, setDefaultModel] = useState<string>("");
+  const [providerName, setProviderName] = useState<string>("");
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+
   // Auto-scroll to bottom when new messages or streaming steps arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -602,6 +659,32 @@ const ChatPanel: React.FC = () => {
     }
   }, []);
 
+  // Fetch available models on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch("/api/v1/ai_assistant/models", {
+          credentials: "same-origin",
+        });
+        if (!resp.ok) return;
+        const data: ModelsResponse = await resp.json();
+        if (cancelled) return;
+        setProviderName(data.provider);
+        setDefaultModel(data.default_model);
+        setSelectedModel(data.default_model);
+        if (data.models && data.models.length > 0) {
+          setAvailableModels(data.models);
+        }
+      } catch (e) {
+        console.warn("[Vambery AI] Could not fetch models:", e);
+      } finally {
+        if (!cancelled) setModelsLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // Get current SQL Lab context
   const getContext = useCallback(async (): Promise<ChatContext> => {
     const tab = sqlLab.getCurrentTab();
@@ -616,14 +699,18 @@ const ChatPanel: React.FC = () => {
       }
     }
 
-    return {
+    const ctx: ChatContext = {
       database_id: tab?.databaseId,
       database_name: undefined, // Will be resolved by backend
       schema: tab?.schema || null,
       catalog: tab?.catalog || null,
       current_sql: currentSql,
     };
-  }, []);
+    if (selectedModel && selectedModel !== defaultModel) {
+      ctx.model_override = selectedModel;
+    }
+    return ctx;
+  }, [selectedModel, defaultModel]);
 
   // Apply a single action immediately (called as actions stream in)
   const applyAction = useCallback(async (action: EditorAction): Promise<boolean> => {
@@ -799,6 +886,46 @@ const ChatPanel: React.FC = () => {
         <span>Vambery AI Agent</span>
         <span style={styles.betaBadge}>BETA</span>
       </div>
+
+      {/* Model selector — shown when multiple models are available */}
+      {modelsLoaded && availableModels.length > 1 && (
+        <div style={styles.modelSelectorContainer}>
+          <span style={styles.modelLabel}>Model:</span>
+          <select
+            style={styles.modelSelect}
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            disabled={loading}
+          >
+            {availableModels.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.name}
+                {m.parameter_size ? ` (${m.parameter_size})` : ""}
+                {m.size_gb ? ` · ${m.size_gb}GB` : ""}
+              </option>
+            ))}
+          </select>
+          {providerName && (
+            <span style={styles.modelBadge}>{providerName}</span>
+          )}
+        </div>
+      )}
+
+      {/* Single model info — shown when only one model available */}
+      {modelsLoaded && availableModels.length === 1 && (
+        <div style={styles.modelSelectorContainer}>
+          <span style={styles.modelLabel}>Model:</span>
+          <span style={{ ...styles.modelLabel, color: styles.container.color }}>
+            {availableModels[0].name}
+            {availableModels[0].parameter_size
+              ? ` (${availableModels[0].parameter_size})`
+              : ""}
+          </span>
+          {providerName && (
+            <span style={styles.modelBadge}>{providerName}</span>
+          )}
+        </div>
+      )}
 
       {/* Messages area */}
       <div style={styles.messagesContainer}>

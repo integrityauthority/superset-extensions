@@ -179,6 +179,7 @@ def run_agent(
     schema_name: str | None = None,
     catalog: str | None = None,
     current_sql: str | None = None,
+    model_override: str | None = None,
 ) -> dict[str, Any]:
     """
     Run the AI agent loop.
@@ -190,6 +191,7 @@ def run_agent(
         schema_name: Selected schema name (for context)
         catalog: Selected catalog (for context)
         current_sql: Current SQL in the editor (for context)
+        model_override: Override the configured model name at runtime
 
     Returns:
         {
@@ -202,6 +204,8 @@ def run_agent(
     config = get_ai_config()
     provider = config["provider"]
     provider_config = get_provider_config(provider)
+    if model_override:
+        provider_config = {**provider_config, "model": model_override}
     max_rounds = config.get("max_tool_rounds", 10)
     max_sample_rows = config.get("max_sample_rows", 20)
 
@@ -357,6 +361,7 @@ def run_agent_stream(
     schema_name: str | None = None,
     catalog: str | None = None,
     current_sql: str | None = None,
+    model_override: str | None = None,
 ) -> Any:
     """
     Streaming version of run_agent.
@@ -370,6 +375,8 @@ def run_agent_stream(
     config = get_ai_config()
     provider = config["provider"]
     provider_config = get_provider_config(provider)
+    if model_override:
+        provider_config = {**provider_config, "model": model_override}
     max_rounds = config.get("max_tool_rounds", 10)
     max_sample_rows = config.get("max_sample_rows", 20)
 
