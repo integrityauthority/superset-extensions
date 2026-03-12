@@ -31,7 +31,7 @@ from typing import Generator
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from ai_assistant.agent import run_agent, run_agent_stream
-from ai_assistant.config import get_ai_config
+from ai_assistant.config import get_ai_config, get_provider_config
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,8 @@ def chat() -> tuple[Response, int] | Response:
     if not database_id:
         return jsonify({"error": "database_id is required in context"}), 400
 
+    model_override = context.get("model_override")
+
     try:
         result = run_agent(
             messages=messages,
@@ -99,6 +101,7 @@ def chat() -> tuple[Response, int] | Response:
             schema_name=context.get("schema"),
             catalog=context.get("catalog"),
             current_sql=context.get("current_sql"),
+            model_override=model_override,
         )
         return jsonify(result)
     except Exception as ex:
@@ -139,6 +142,8 @@ def chat_stream() -> tuple[Response, int] | Response:
     if not database_id:
         return jsonify({"error": "database_id is required in context"}), 400
 
+    model_override = context.get("model_override")
+
     def generate() -> Generator[str, None, None]:
         try:
             for event in run_agent_stream(
@@ -148,6 +153,7 @@ def chat_stream() -> tuple[Response, int] | Response:
                 schema_name=context.get("schema"),
                 catalog=context.get("catalog"),
                 current_sql=context.get("current_sql"),
+                model_override=model_override,
             ):
                 event_type = event["event"]
                 event_data = json.dumps(event["data"], default=str)
@@ -166,6 +172,59 @@ def chat_stream() -> tuple[Response, int] | Response:
             "Connection": "keep-alive",
         },
     )
+
+
+@ai_assistant_bp.route("/models", methods=["GET"])
+def list_models() -> tuple[Response, int] | Response:
+    """
+    List available LLM models for the configured provider.
+
+    For Ollama, queries the Ollama server's /api/tags endpoint
+    to discover installed models. For other providers, returns
+    the configured model/deployment name.
+
+    Response:
+    {
+        "provider": "ollama",
+        "models": [
+            {"name": "qwen3.5:122b", "size_gb": 70.2, ...},
+            ...
+        ],
+        "default_model": "llama3.1"
+    }
+    """
+    try:
+        config = get_ai_config()
+        provider = config.get("provider", "unknown")
+        p_config = get_provider_config(provider)
+
+        if provider == "ollama":
+            from ai_assistant.llm import list_ollama_models
+
+            base_url = p_config.get(
+                "base_url", "http://localhost:11434"
+            )
+            models = list_ollama_models(base_url)
+            default_model = p_config.get("model", "llama3.1")
+            return jsonify({
+                "provider": provider,
+                "models": models,
+                "default_model": default_model,
+            })
+
+        # Non-Ollama providers: return the configured model
+        model_name = p_config.get(
+            "model",
+            p_config.get("deployment_name", "unknown"),
+        )
+        return jsonify({
+            "provider": provider,
+            "models": [{"name": model_name}],
+            "default_model": model_name,
+        })
+    except Exception as ex:
+        logger.exception("Error listing models")
+        return jsonify({"error": str(ex)}), 500
 
 
 @ai_assistant_bp.route("/health", methods=["GET"])
