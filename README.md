@@ -97,14 +97,34 @@ OLLAMA_MODEL=qwen3.5:122b
 
 3. **Configure** `docker/.env-local` — set `AI_PROVIDER` and the corresponding provider settings (see above).
 
-4. **Start Superset**:
+4. **Build and start** (production / non-dev mode):
    ```bash
-   docker compose -f docker-compose-non-dev.yml up -d
+   docker compose -f docker-compose-non-dev.yml up -d --build
    ```
 
 5. **Verify**: Open SQL Lab, expand the right sidebar — the Vambery AI Agent panel should be visible with the model selector.
 
-> **Note on Ollama**: The Ollama server must be network-reachable from the Docker container. If using internal hostnames, ensure DNS resolution works inside Docker or use the IP address directly.
+### Important: Frontend Build Requirement
+
+The Superset frontend must be compiled with `DEV_MODE=false` for the extension
+system (Module Federation) to work. If your `docker-compose-non-dev.yml` uses
+`target: dev`, ensure the build args include:
+
+```yaml
+x-common-build: &common-build
+  context: .
+  target: dev
+  args:
+    DEV_MODE: "false"          # Required for Module Federation
+    INSTALL_MSSQL_ODBC: "true" # If using MSSQL
+```
+
+Without `DEV_MODE: "false"`, the frontend build is skipped and extensions won't
+load in the browser (the backend API will work but the UI panel won't appear).
+
+> **Note on Ollama**: The Ollama server must be network-reachable from the Docker
+> container. If using internal hostnames, ensure DNS resolution works inside
+> Docker or use the IP address directly.
 
 ---
 
