@@ -16,6 +16,7 @@ An AI-powered data assistant that lives inside SQL Lab. Ask questions in natural
 - Send to Editor buttons on all SQL code blocks
 - Streaming responses with real-time tool-use visibility
 - Multiple LLM providers: Azure OpenAI, OpenAI, Ollama (self-hosted)
+- Ollama model auto-discovery with per-question model selector
 
 See the **[full documentation](ai_assistant/README.md)** for configuration, architecture, and API reference.
 

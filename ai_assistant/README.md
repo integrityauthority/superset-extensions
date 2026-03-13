@@ -16,6 +16,7 @@ chart visualizations through a conversational interface.
 - **Chart creation** — creates bar, line, pie, and table charts from query results
 - **Send to Editor** — click any SQL code block in the chat to send it to the editor
 - **Streaming** — tool call steps stream to the UI in real-time via SSE
+- **Model selector** — when using Ollama, auto-discovers installed models and lets you pick per-question
 
 ## LLM Providers
 
@@ -33,10 +34,18 @@ calling. Multiple providers are supported — configure one as the active provid
 The model must support **function calling / tool use**. Compatible models:
 
 - **Azure/OpenAI**: GPT-4o, GPT-4o-mini, GPT-4.1, GPT-5 and newer
-- **Ollama**: llama3.1 (8B/70B), qwen2.5, mistral, command-r — any model with tool-calling support
+- **Ollama**: llama3.1 (8B/70B), qwen2.5, qwen3.5 (122B), mistral, command-r — any model with tool-calling support
 
 > **Note**: Smaller models (7-8B) work but may struggle with complex multi-step
 > queries. For best results, use 70B+ parameter models or GPT-4o class models.
+
+### Model auto-discovery (Ollama)
+
+When the provider is set to `ollama`, the extension automatically queries the
+Ollama server's `/api/tags` endpoint to list all installed models. A model
+selector dropdown appears in the chat panel header, letting users switch models
+per question without restarting Superset. The dropdown shows model name,
+parameter size, and disk size.
 
 ## Configuration
 
@@ -135,6 +144,7 @@ from environment variables:
 |----------|--------|-------------|
 | `/api/v1/ai_assistant/chat` | POST | Synchronous chat |
 | `/api/v1/ai_assistant/chat/stream` | POST | Streaming chat (SSE) |
+| `/api/v1/ai_assistant/models` | GET | List available LLM models (auto-discovery for Ollama) |
 | `/api/v1/ai_assistant/health` | GET | Health check |
 
 ## Project Structure
