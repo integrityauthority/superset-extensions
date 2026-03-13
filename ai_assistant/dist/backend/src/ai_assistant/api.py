@@ -234,14 +234,21 @@ def health() -> tuple[Response, int] | Response:
         config = get_ai_config()
         provider = config.get("provider", "unknown")
         provider_config = config.get(provider, {})
-        has_api_key = bool(provider_config.get("api_key"))
-        has_endpoint = bool(provider_config.get("azure_endpoint") or provider_config.get("base_url"))
+        if provider == "ollama":
+            configured = bool(provider_config.get("base_url"))
+        else:
+            has_key = bool(provider_config.get("api_key"))
+            has_ep = bool(
+                provider_config.get("azure_endpoint")
+                or provider_config.get("base_url")
+            )
+            configured = has_key and has_ep
 
         return jsonify(
             {
                 "status": "ok",
                 "provider": provider,
-                "configured": has_api_key and has_endpoint,
+                "configured": configured,
             }
         )
     except Exception as ex:

@@ -283,7 +283,7 @@ def _ollama_completion(
 
     logger.debug(
         "Ollama request: base_url=%s, model=%s, messages=%d, tools=%s",
-        base_url,
+        api_url,
         model,
         len(messages),
         len(tools) if tools else 0,
