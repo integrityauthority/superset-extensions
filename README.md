@@ -74,12 +74,37 @@ AI_PROVIDER=azure_openai
 AZURE_OPENAI_API_KEY=your-key
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_DEPLOYMENT=gpt-4o
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
 
 # OR Ollama (self-hosted, no API key needed)
 AI_PROVIDER=ollama
 OLLAMA_BASE_URL=http://your-ollama-host:11434
-OLLAMA_MODEL=llama3.1
+OLLAMA_MODEL=qwen3.5:122b
 ```
+
+### Deployment Checklist
+
+1. **Clone with submodules**:
+   ```bash
+   git clone --recurse-submodules https://github.com/integrityauthority/superset.git
+   cd superset
+   ```
+
+2. **Update submodule to latest**:
+   ```bash
+   git submodule update --init --remote extensions
+   ```
+
+3. **Configure** `docker/.env-local` — set `AI_PROVIDER` and the corresponding provider settings (see above).
+
+4. **Start Superset**:
+   ```bash
+   docker compose -f docker-compose-non-dev.yml up -d
+   ```
+
+5. **Verify**: Open SQL Lab, expand the right sidebar — the Vambery AI Agent panel should be visible with the model selector.
+
+> **Note on Ollama**: The Ollama server must be network-reachable from the Docker container. If using internal hostnames, ensure DNS resolution works inside Docker or use the IP address directly.
 
 ---
 
