@@ -124,6 +124,17 @@ patterns — aggregations, comparisons, distributions, trends over time.
 - When the user asks an open-ended question about data, provide the most useful analytical \
 query first, then offer 2-3 alternative queries that explore the data from different angles
 - Use markdown formatting in your responses: headers, bold, code blocks, lists
+
+## CRITICAL: ALWAYS FINISH THE TASK — NEVER GIVE UP
+- You MUST complete every task the user asks for. Do NOT stop halfway through.
+- If a query fails, fix it and try again. If data is missing, try different approaches.
+- You have up to 50 tool calls available — use as many as needed to get the job done.
+- Do NOT say "I've been working on this for a while" or "I haven't finished" — \
+these responses are UNACCEPTABLE. Always deliver a complete, working result.
+- If you're exploring data and haven't found what you need, keep trying different \
+tables, columns, or query strategies until you succeed.
+- Plan efficiently: explore schema first, then write and test the query in \
+as few steps as possible. Avoid redundant tool calls.
 """
 
 
@@ -180,6 +191,7 @@ def run_agent(
     catalog: str | None = None,
     current_sql: str | None = None,
     model_override: str | None = None,
+    provider_override: str | None = None,
 ) -> dict[str, Any]:
     """
     Run the AI agent loop.
@@ -192,6 +204,7 @@ def run_agent(
         catalog: Selected catalog (for context)
         current_sql: Current SQL in the editor (for context)
         model_override: Override the configured model name at runtime
+        provider_override: Override the configured provider at runtime
 
     Returns:
         {
@@ -202,7 +215,7 @@ def run_agent(
         }
     """
     config = get_ai_config()
-    provider = config["provider"]
+    provider = provider_override or config["provider"]
     provider_config = get_provider_config(provider)
     if model_override:
         provider_config = {**provider_config, "model": model_override}
@@ -339,18 +352,40 @@ def run_agent(
             "usage": total_usage,
         }
 
-    # Max rounds exceeded
-    logger.warning("Agent exceeded max rounds (%d)", max_rounds)
+    # Max rounds exceeded — force a final answer without tools
+    logger.warning("Agent exceeded max rounds (%d), forcing final answer", max_rounds)
+    llm_messages.append({
+        "role": "user",
+        "content": (
+            "You have used all available tool calls. You MUST now provide your "
+            "final answer based on everything you've learned so far. Summarize "
+            "your findings, present the best query you have, and call set_editor_sql "
+            "if you haven't already. Do NOT say you haven't finished."
+        ),
+    })
+    try:
+        final_result = create_chat_completion(
+            provider_config=provider_config,
+            provider=provider,
+            messages=llm_messages,
+            tools=None,
+        )
+        forced_content = final_result.get("message", {}).get("content", "")
+        usage = final_result.get("usage", {})
+        total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+        total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+        total_usage["total_tokens"] += usage.get("total_tokens", 0)
+    except Exception:
+        forced_content = ""
+
     return {
-        "response": (
-            "I've been working on this for a while but haven't finished. "
-            "Here's what I've done so far. You can continue the conversation "
-            "for me to refine the results."
+        "response": forced_content or (
+            "I explored the database extensively but ran out of tool calls. "
+            "Please try again with a more specific question."
         ),
         "actions": actions,
         "steps": steps,
         "usage": total_usage,
-        "warning": "max_rounds_exceeded",
     }
 
 
@@ -362,6 +397,7 @@ def run_agent_stream(
     catalog: str | None = None,
     current_sql: str | None = None,
     model_override: str | None = None,
+    provider_override: str | None = None,
 ) -> Any:
     """
     Streaming version of run_agent.
@@ -373,7 +409,7 @@ def run_agent_stream(
         {"event": "error",    "data": {"error": ...}}
     """
     config = get_ai_config()
-    provider = config["provider"]
+    provider = provider_override or config["provider"]
     provider_config = get_provider_config(provider)
     if model_override:
         provider_config = {**provider_config, "model": model_override}
@@ -500,18 +536,40 @@ def run_agent_stream(
         }
         return
 
-    # Max rounds exceeded
-    logger.warning("Agent stream exceeded max rounds (%d)", max_rounds)
+    # Max rounds exceeded — force a final answer without tools
+    logger.warning("Agent stream exceeded max rounds (%d), forcing final answer", max_rounds)
+    llm_messages.append({
+        "role": "user",
+        "content": (
+            "You have used all available tool calls. You MUST now provide your "
+            "final answer based on everything you've learned so far. Summarize "
+            "your findings, present the best query you have, and call set_editor_sql "
+            "if you haven't already. Do NOT say you haven't finished."
+        ),
+    })
+    try:
+        final_result = create_chat_completion(
+            provider_config=provider_config,
+            provider=provider,
+            messages=llm_messages,
+            tools=None,
+        )
+        forced_content = final_result.get("message", {}).get("content", "")
+        usage = final_result.get("usage", {})
+        total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+        total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+        total_usage["total_tokens"] += usage.get("total_tokens", 0)
+    except Exception:
+        forced_content = ""
+
     yield {
         "event": "response",
         "data": {
-            "response": (
-                "I've been working on this for a while but haven't finished. "
-                "Here's what I've done so far. You can continue the conversation "
-                "for me to refine the results."
+            "response": forced_content or (
+                "I explored the database extensively but ran out of tool calls. "
+                "Please try again with a more specific question."
             ),
             "usage": total_usage,
-            "warning": "max_rounds_exceeded",
         },
     }
 

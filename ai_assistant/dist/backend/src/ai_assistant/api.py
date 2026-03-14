@@ -92,6 +92,7 @@ def chat() -> tuple[Response, int] | Response:
         return jsonify({"error": "database_id is required in context"}), 400
 
     model_override = context.get("model_override")
+    provider_override = context.get("provider_override")
 
     try:
         result = run_agent(
@@ -102,6 +103,7 @@ def chat() -> tuple[Response, int] | Response:
             catalog=context.get("catalog"),
             current_sql=context.get("current_sql"),
             model_override=model_override,
+            provider_override=provider_override,
         )
         return jsonify(result)
     except Exception as ex:
@@ -143,6 +145,7 @@ def chat_stream() -> tuple[Response, int] | Response:
         return jsonify({"error": "database_id is required in context"}), 400
 
     model_override = context.get("model_override")
+    provider_override = context.get("provider_override")
 
     def generate() -> Generator[str, None, None]:
         try:
@@ -154,6 +157,7 @@ def chat_stream() -> tuple[Response, int] | Response:
                 catalog=context.get("catalog"),
                 current_sql=context.get("current_sql"),
                 model_override=model_override,
+                provider_override=provider_override,
             ):
                 event_type = event["event"]
                 event_data = json.dumps(event["data"], default=str)
@@ -177,50 +181,91 @@ def chat_stream() -> tuple[Response, int] | Response:
 @ai_assistant_bp.route("/models", methods=["GET"])
 def list_models() -> tuple[Response, int] | Response:
     """
-    List available LLM models for the configured provider.
+    List available LLM models from ALL configured providers.
 
-    For Ollama, queries the Ollama server's /api/tags endpoint
-    to discover installed models. For other providers, returns
-    the configured model/deployment name.
+    Returns a flat list of provider/model combinations that the
+    frontend can display in a single dropdown. Ollama models are
+    auto-discovered via /api/tags; other providers return their
+    configured model.
 
     Response:
     {
-        "provider": "ollama",
+        "active_provider": "ollama",
+        "default_model": "ollama/qwen3.5:122b",
         "models": [
-            {"name": "qwen3.5:122b", "size_gb": 70.2, ...},
+            {"id": "azure_openai/gpt-5.2-chat", "provider": "azure_openai",
+             "model": "gpt-5.2-chat", "label": "gpt-5.2-chat"},
+            {"id": "ollama/qwen3.5:122b", "provider": "ollama",
+             "model": "qwen3.5:122b", "label": "qwen3.5:122b (125.1B) · 75.8GB"},
             ...
-        ],
-        "default_model": "llama3.1"
+        ]
     }
     """
     try:
         config = get_ai_config()
-        provider = config.get("provider", "unknown")
-        p_config = get_provider_config(provider)
+        active_provider = config.get("provider", "unknown")
+        all_models: list[dict[str, str]] = []
 
-        if provider == "ollama":
-            from ai_assistant.llm import list_ollama_models
-
-            base_url = p_config.get(
-                "base_url", "http://localhost:11434"
-            )
-            models = list_ollama_models(base_url)
-            default_model = p_config.get("model", "llama3.1")
-            return jsonify({
-                "provider": provider,
-                "models": models,
-                "default_model": default_model,
+        # --- Azure OpenAI ---
+        azure_cfg = config.get("azure_openai", {})
+        if azure_cfg.get("api_key") and azure_cfg.get("azure_endpoint"):
+            model = azure_cfg.get("deployment_name", "gpt-4o")
+            all_models.append({
+                "id": f"azure_openai/{model}",
+                "provider": "azure_openai",
+                "model": model,
+                "label": model,
             })
 
-        # Non-Ollama providers: return the configured model
-        model_name = p_config.get(
-            "model",
-            p_config.get("deployment_name", "unknown"),
-        )
+        # --- OpenAI ---
+        openai_cfg = config.get("openai", {})
+        if openai_cfg.get("api_key"):
+            model = openai_cfg.get("model", "gpt-4o")
+            all_models.append({
+                "id": f"openai/{model}",
+                "provider": "openai",
+                "model": model,
+                "label": model,
+            })
+
+        # --- Ollama (auto-discover) ---
+        ollama_cfg = config.get("ollama", {})
+        ollama_base = ollama_cfg.get("base_url")
+        if ollama_base:
+            try:
+                from ai_assistant.llm import list_ollama_models
+
+                discovered = list_ollama_models(ollama_base)
+                for m in discovered:
+                    name = m["name"]
+                    parts = [name]
+                    if m.get("parameter_size"):
+                        parts[0] += f" ({m['parameter_size']})"
+                    if m.get("size_gb"):
+                        parts.append(f"{m['size_gb']}GB")
+                    all_models.append({
+                        "id": f"ollama/{name}",
+                        "provider": "ollama",
+                        "model": name,
+                        "label": " · ".join(parts),
+                    })
+            except Exception as ex:
+                logger.warning("Could not discover Ollama models: %s", ex)
+
+        # Build default model id
+        if active_provider == "ollama":
+            default_id = f"ollama/{ollama_cfg.get('model', 'llama3.1')}"
+        elif active_provider == "azure_openai":
+            default_id = f"azure_openai/{azure_cfg.get('deployment_name', 'gpt-4o')}"
+        elif active_provider == "openai":
+            default_id = f"openai/{openai_cfg.get('model', 'gpt-4o')}"
+        else:
+            default_id = all_models[0]["id"] if all_models else ""
+
         return jsonify({
-            "provider": provider,
-            "models": [{"name": model_name}],
-            "default_model": model_name,
+            "active_provider": active_provider,
+            "default_model": default_id,
+            "models": all_models,
         })
     except Exception as ex:
         logger.exception("Error listing models")

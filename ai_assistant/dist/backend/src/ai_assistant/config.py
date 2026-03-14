@@ -87,7 +87,7 @@ DEFAULTS: dict[str, Any] = {
         "model": "llama3.1",
     },
     "system_prompt_extra": "",
-    "max_tool_rounds": 10,
+    "max_tool_rounds": 50,
     "max_sample_rows": 20,
 }
 

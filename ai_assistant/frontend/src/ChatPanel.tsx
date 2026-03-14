@@ -73,20 +73,20 @@ interface ChatContext {
   catalog: string | null;
   current_sql: string;
   model_override?: string;
+  provider_override?: string;
 }
 
-interface OllamaModel {
-  name: string;
-  size_gb?: number;
-  parameter_size?: string;
-  family?: string;
-  quantization?: string;
+interface ModelOption {
+  id: string;       // "azure_openai/gpt-5.2-chat" or "ollama/qwen3.5:122b"
+  provider: string;
+  model: string;
+  label: string;
 }
 
 interface ModelsResponse {
-  provider: string;
-  models: OllamaModel[];
+  active_provider: string;
   default_model: string;
+  models: ModelOption[];
 }
 
 // --------------------------------------------------------------------------
@@ -448,17 +448,7 @@ function getStyles(t: SupersetTheme) {
       fontSize: t.fontSizeSM,
       fontWeight: t.fontWeightStrong,
     },
-    modelSelectorContainer: {
-      display: "flex",
-      alignItems: "center",
-      padding: `${t.paddingXS - 1}px ${t.padding}px`,
-      borderBottom: `1px solid ${t.colorBorderSecondary}`,
-      backgroundColor: t.colorBgContainer,
-      gap: t.sizeXS,
-      fontSize: t.fontSizeSM,
-    },
     modelSelect: {
-      flex: 1,
       padding: `${t.paddingXS - 2}px ${t.paddingXS}px`,
       border: `1px solid ${t.colorBorder}`,
       borderRadius: t.borderRadiusSM,
@@ -470,19 +460,57 @@ function getStyles(t: SupersetTheme) {
       maxWidth: "100%",
       overflow: "hidden",
       textOverflow: "ellipsis",
+      flex: 1,
+      minWidth: 0,
     },
-    modelLabel: {
-      color: t.colorTextSecondary,
+    userBubbleWrapper: {
+      position: "relative" as const,
+      group: "user-msg",
+    },
+    editIcon: {
+      position: "absolute" as const,
+      top: 4,
+      right: 4,
+      padding: "2px 5px",
+      backgroundColor: "rgba(255,255,255,0.2)",
+      border: "none",
+      borderRadius: t.borderRadiusSM,
+      cursor: "pointer",
       fontSize: t.fontSizeSM - 1,
-      whiteSpace: "nowrap" as const,
-      flexShrink: 0,
+      color: "rgba(255,255,255,0.8)",
+      lineHeight: 1,
+      opacity: 0,
+      transition: "opacity 0.15s",
     },
-    modelBadge: {
-      fontSize: t.fontSizeSM - 2,
-      color: t.colorTextTertiary,
-      whiteSpace: "nowrap" as const,
-      flexShrink: 0,
+    editTextArea: {
+      width: "100%",
+      border: "none",
+      borderRadius: t.borderRadius,
+      padding: `${t.paddingXS}px ${t.paddingSM}px`,
+      fontSize: t.fontSize,
+      resize: "none" as const,
+      outline: "none",
+      fontFamily: "inherit",
+      lineHeight: t.lineHeight,
+      minHeight: 40,
+      backgroundColor: "transparent",
+      color: "#fff",
     },
+    editActions: {
+      display: "flex",
+      justifyContent: "flex-end",
+      gap: 4,
+      marginTop: 4,
+    },
+    editButton: (primary: boolean) => ({
+      padding: `1px ${t.paddingSM}px`,
+      backgroundColor: primary ? "rgba(255,255,255,0.25)" : "transparent",
+      color: "#fff",
+      border: `1px solid rgba(255,255,255,0.3)`,
+      borderRadius: t.borderRadiusSM,
+      cursor: "pointer",
+      fontSize: t.fontSizeSM - 1,
+    }),
   };
 }
 
@@ -635,31 +663,35 @@ const ChatPanel: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Model selector state
-  const [availableModels, setAvailableModels] = useState<OllamaModel[]>([]);
-  const [selectedModel, setSelectedModel] = useState<string>("");
-  const [defaultModel, setDefaultModel] = useState<string>("");
-  const [providerName, setProviderName] = useState<string>("");
+  // Model selector state (combined provider/model)
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState<string>("");
+  const [defaultModelId, setDefaultModelId] = useState<string>("");
   const [modelsLoaded, setModelsLoaded] = useState(false);
+
+  // Edit prompt state
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [editText, setEditText] = useState("");
 
   // Auto-scroll to bottom when new messages or streaming steps arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading, streamingSteps]);
 
-  // Inject the CSS keyframe animation for the spinner (once)
+  // Inject CSS keyframe animations (once)
   useEffect(() => {
     const styleId = "vambery-spin-keyframes";
     if (!document.getElementById(styleId)) {
       const style = document.createElement("style");
       style.id = styleId;
-      style.textContent =
-        "@keyframes vambery-spin { to { transform: rotate(360deg); } }";
+      style.textContent = [
+        "@keyframes vambery-spin { to { transform: rotate(360deg); } }",
+      ].join("\n");
       document.head.appendChild(style);
     }
   }, []);
 
-  // Fetch available models on mount
+  // Fetch available models from all providers on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -670,9 +702,8 @@ const ChatPanel: React.FC = () => {
         if (!resp.ok) return;
         const data: ModelsResponse = await resp.json();
         if (cancelled) return;
-        setProviderName(data.provider);
-        setDefaultModel(data.default_model);
-        setSelectedModel(data.default_model);
+        setDefaultModelId(data.default_model);
+        setSelectedModelId(data.default_model);
         if (data.models && data.models.length > 0) {
           setAvailableModels(data.models);
         }
@@ -701,16 +732,21 @@ const ChatPanel: React.FC = () => {
 
     const ctx: ChatContext = {
       database_id: tab?.databaseId,
-      database_name: undefined, // Will be resolved by backend
+      database_name: undefined,
       schema: tab?.schema || null,
       catalog: tab?.catalog || null,
       current_sql: currentSql,
     };
-    if (selectedModel && selectedModel !== defaultModel) {
-      ctx.model_override = selectedModel;
+    // Parse selected "provider/model" id to override if different from default
+    if (selectedModelId && selectedModelId !== defaultModelId) {
+      const sel = availableModels.find((m) => m.id === selectedModelId);
+      if (sel) {
+        ctx.provider_override = sel.provider;
+        ctx.model_override = sel.model;
+      }
     }
     return ctx;
-  }, [selectedModel, defaultModel]);
+  }, [selectedModelId, defaultModelId, availableModels]);
 
   // Apply a single action immediately (called as actions stream in)
   const applyAction = useCallback(async (action: EditorAction): Promise<boolean> => {
@@ -876,7 +912,113 @@ const ChatPanel: React.FC = () => {
   const handleClear = useCallback(() => {
     setMessages([]);
     setInput("");
+    setEditingIdx(null);
   }, []);
+
+  // Start editing a previous user message
+  const handleStartEdit = useCallback((idx: number) => {
+    if (loading) return;
+    setEditingIdx(idx);
+    setEditText(messages[idx].content);
+  }, [loading, messages]);
+
+  // Cancel editing
+  const handleCancelEdit = useCallback(() => {
+    setEditingIdx(null);
+    setEditText("");
+  }, []);
+
+  // Submit the edited message: truncate conversation and re-send
+  const handleSubmitEdit = useCallback(async (idx: number) => {
+    const text = editText.trim();
+    if (!text || loading) return;
+
+    // Keep messages before the edited one, replace with new text
+    const kept = messages.slice(0, idx);
+    const editedMsg: ChatMessage = {
+      role: "user",
+      content: text,
+      timestamp: Date.now(),
+    };
+    setMessages([...kept, editedMsg]);
+    setEditingIdx(null);
+    setEditText("");
+    setInput("");
+    setLoading(true);
+    setStreamingSteps([]);
+
+    try {
+      const context = await getContext();
+      if (!context.database_id) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: "Please select a database in the left sidebar first.",
+            timestamp: Date.now(),
+            error: true,
+          },
+        ]);
+        setLoading(false);
+        return;
+      }
+
+      const apiMessages = [
+        ...kept.map((m) => ({ role: m.role, content: m.content })),
+        { role: "user", content: text },
+      ];
+
+      const collectedSteps: AgentStep[] = [];
+      const collectedActions: EditorAction[] = [];
+      let finalResponse = "";
+      let hasError = false;
+      let hasRunnable = false;
+
+      await postChatStream(apiMessages, context, async (evt) => {
+        if (evt.event === "step") {
+          const step = evt.data as unknown as AgentStep;
+          collectedSteps.push(step);
+          setStreamingSteps([...collectedSteps]);
+        } else if (evt.event === "action") {
+          const action = evt.data as unknown as EditorAction;
+          collectedActions.push(action);
+          const ran = await applyAction(action);
+          if (ran) hasRunnable = true;
+        } else if (evt.event === "response") {
+          finalResponse = (evt.data.response as string) || "I couldn't generate a response.";
+        } else if (evt.event === "error") {
+          finalResponse = `Error: ${evt.data.error || "Something went wrong"}`;
+          hasError = true;
+        }
+      });
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: finalResponse || "I couldn't generate a response.",
+          timestamp: Date.now(),
+          steps: collectedSteps,
+          actions: collectedActions,
+          error: hasError,
+          hasRunnable,
+        },
+      ]);
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `Error: ${(error as Error).message || "Something went wrong"}`,
+          timestamp: Date.now(),
+          error: true,
+        },
+      ]);
+    } finally {
+      setLoading(false);
+      setStreamingSteps([]);
+    }
+  }, [editText, loading, messages, getContext, applyAction]);
 
   return (
     <div style={styles.container}>
@@ -886,46 +1028,6 @@ const ChatPanel: React.FC = () => {
         <span>Vambery AI Agent</span>
         <span style={styles.betaBadge}>BETA</span>
       </div>
-
-      {/* Model selector — shown when multiple models are available */}
-      {modelsLoaded && availableModels.length > 1 && (
-        <div style={styles.modelSelectorContainer}>
-          <span style={styles.modelLabel}>Model:</span>
-          <select
-            style={styles.modelSelect}
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            disabled={loading}
-          >
-            {availableModels.map((m) => (
-              <option key={m.name} value={m.name}>
-                {m.name}
-                {m.parameter_size ? ` (${m.parameter_size})` : ""}
-                {m.size_gb ? ` · ${m.size_gb}GB` : ""}
-              </option>
-            ))}
-          </select>
-          {providerName && (
-            <span style={styles.modelBadge}>{providerName}</span>
-          )}
-        </div>
-      )}
-
-      {/* Single model info — shown when only one model available */}
-      {modelsLoaded && availableModels.length === 1 && (
-        <div style={styles.modelSelectorContainer}>
-          <span style={styles.modelLabel}>Model:</span>
-          <span style={{ ...styles.modelLabel, color: styles.container.color }}>
-            {availableModels[0].name}
-            {availableModels[0].parameter_size
-              ? ` (${availableModels[0].parameter_size})`
-              : ""}
-          </span>
-          {providerName && (
-            <span style={styles.modelBadge}>{providerName}</span>
-          )}
-        </div>
-      )}
 
       {/* Messages area */}
       <div style={styles.messagesContainer}>
@@ -945,9 +1047,69 @@ const ChatPanel: React.FC = () => {
 
         {messages.map((msg, idx) => (
           <div key={idx}>
-            {/* User messages render normally */}
+            {/* User messages — with edit support */}
             {msg.role === "user" && (
-              <div style={styles.messageBubble(true)}>{msg.content}</div>
+              <div
+                style={{ ...styles.messageBubble(true), position: "relative" as const }}
+                onMouseEnter={(e) => {
+                  const btn = e.currentTarget.querySelector("[data-edit-btn]") as HTMLElement;
+                  if (btn) btn.style.opacity = "1";
+                }}
+                onMouseLeave={(e) => {
+                  const btn = e.currentTarget.querySelector("[data-edit-btn]") as HTMLElement;
+                  if (btn) btn.style.opacity = "0";
+                }}
+              >
+                {editingIdx === idx ? (
+                  <>
+                    <textarea
+                      style={styles.editTextArea}
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSubmitEdit(idx);
+                        }
+                        if (e.key === "Escape") handleCancelEdit();
+                      }}
+                      autoFocus
+                      rows={2}
+                    />
+                    <div style={styles.editActions}>
+                      <button
+                        type="button"
+                        style={styles.editButton(false)}
+                        onClick={handleCancelEdit}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        style={styles.editButton(true)}
+                        onClick={() => handleSubmitEdit(idx)}
+                      >
+                        Resend
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {msg.content}
+                    {!loading && (
+                      <button
+                        type="button"
+                        data-edit-btn=""
+                        style={styles.editIcon}
+                        onClick={() => handleStartEdit(idx)}
+                        title="Edit this message"
+                      >
+                        &#x270E;
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
             )}
 
             {/* Assistant: steps ABOVE the response text */}
@@ -1067,6 +1229,21 @@ const ChatPanel: React.FC = () => {
           rows={3}
         />
         <div style={styles.buttonRow}>
+          {modelsLoaded && availableModels.length > 0 && (
+            <select
+              style={styles.modelSelect}
+              value={selectedModelId}
+              onChange={(e) => setSelectedModelId(e.target.value)}
+              disabled={loading}
+              title="Select AI model"
+            >
+              {availableModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.provider}/{m.label}
+                </option>
+              ))}
+            </select>
+          )}
           {messages.length > 0 && (
             <button style={styles.clearButton} onClick={handleClear} type="button">
               Clear
