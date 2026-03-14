@@ -16,7 +16,9 @@ chart visualizations through a conversational interface.
 - **Chart creation** — creates bar, line, pie, and table charts from query results
 - **Send to Editor** — click any SQL code block in the chat to send it to the editor
 - **Streaming** — tool call steps stream to the UI in real-time via SSE
-- **Model selector** — when using Ollama, auto-discovers installed models and lets you pick per-question
+- **Multi-provider model selector** — combined dropdown shows models from all configured providers (e.g. `azure_openai/gpt-5.2-chat`, `ollama/qwen3.5:122b`), placed near the Send button
+- **Edit former prompts** — click the pencil icon on any previous user message to edit and resend it; subsequent messages are automatically flushed
+- **Persistent task completion** — the agent uses up to 50 tool rounds and is forced to deliver a final answer (no more "I haven't finished" cop-outs)
 
 ## LLM Providers
 
@@ -39,13 +41,13 @@ The model must support **function calling / tool use**. Compatible models:
 > **Note**: Smaller models (7-8B) work but may struggle with complex multi-step
 > queries. For best results, use 70B+ parameter models or GPT-4o class models.
 
-### Model auto-discovery (Ollama)
+### Multi-provider model selector
 
-When the provider is set to `ollama`, the extension automatically queries the
-Ollama server's `/api/tags` endpoint to list all installed models. A model
-selector dropdown appears in the chat panel header, letting users switch models
-per question without restarting Superset. The dropdown shows model name,
-parameter size, and disk size.
+The extension discovers models from ALL configured providers simultaneously.
+Ollama models are auto-discovered via `/api/tags`; Azure/OpenAI returns the
+configured deployment. A combined dropdown near the Send button lets users
+pick any model from any provider per question (e.g. `azure_openai/gpt-5.2-chat`
+or `ollama/qwen3.5:122b`) without restarting Superset.
 
 ## Configuration
 
@@ -55,7 +57,7 @@ Add to `superset_config.py`:
 AI_ASSISTANT = {
     "provider": "azure_openai",  # or "openai" or "ollama"
     "system_prompt_extra": "",   # additional instructions for the AI
-    "max_tool_rounds": 10,       # max tool-use rounds per conversation turn
+    "max_tool_rounds": 50,       # max tool-use rounds per conversation turn
     "max_sample_rows": 20,       # max rows for sample queries
 
     # Azure OpenAI
