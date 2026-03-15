@@ -6,20 +6,28 @@
  */
 
 declare module "@apache-superset/core" {
-  // Core extension types
-  export namespace core {
+  // Core types
+  export namespace common {
     interface Disposable {
       dispose(): void;
     }
+  }
 
-    interface ExtensionContext {
-      disposables: Disposable[];
+  // Views registration API
+  export namespace views {
+    interface View {
+      id: string;
+      name: string;
+      description?: string;
     }
 
-    function registerViewProvider(
-      viewId: string,
-      factory: () => React.ReactElement
-    ): Disposable;
+    function registerView(
+      view: View,
+      location: string,
+      provider: () => React.ReactElement
+    ): common.Disposable;
+
+    function getViews(location: string): View[] | undefined;
   }
 
   // SQL Lab API
