@@ -239,10 +239,10 @@ function getStyles(t: themeApi.SupersetTheme) {
       gap: 6,
       alignItems: "flex-start",
     },
-    stepIcon: {
-      color: t.colorSuccess,
+    stepIcon: (isError: boolean) => ({
+      color: isError ? t.colorError : t.colorSuccess,
       flexShrink: 0,
-    },
+    }),
     stepArgs: {
       color: t.colorTextTertiary,
     },
@@ -1121,21 +1121,24 @@ const ChatPanel: React.FC = () => {
                     <div style={{ fontWeight: 600, marginBottom: 4 }}>
                       Agent steps:
                     </div>
-                    {msg.steps.map((step, sIdx) => (
-                      <div key={sIdx} style={styles.stepItem}>
-                        <span style={styles.stepIcon}>&#x2713;</span>
-                        <span>
-                          <strong>{step.tool}</strong>
-                          {step.args && Object.keys(step.args).length > 0 && (
-                            <span style={styles.stepArgs}>
-                              ({Object.values(step.args).join(", ")})
-                            </span>
-                          )}
-                          {" — "}
-                          {step.result_summary}
-                        </span>
-                      </div>
-                    ))}
+                    {msg.steps.map((step, sIdx) => {
+                      const isErr = /\bError\b/i.test(step.result_summary);
+                      return (
+                        <div key={sIdx} style={styles.stepItem}>
+                          <span style={styles.stepIcon(isErr)}>{isErr ? "\u2717" : "\u2713"}</span>
+                          <span>
+                            <strong>{step.tool}</strong>
+                            {step.args && Object.keys(step.args).length > 0 && (
+                              <span style={styles.stepArgs}>
+                                ({Object.values(step.args).join(", ")})
+                              </span>
+                            )}
+                            {" — "}
+                            {step.result_summary}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -1189,21 +1192,24 @@ const ChatPanel: React.FC = () => {
                 <span style={styles.stepSpinner} />
                 <span>Agent working...</span>
               </div>
-              {streamingSteps.map((step, sIdx) => (
-                <div key={sIdx} style={styles.stepItem}>
-                  <span style={styles.stepIcon}>&#x2713;</span>
-                  <span>
-                    <strong>{step.tool}</strong>
-                    {step.args && Object.keys(step.args).length > 0 && (
-                      <span style={styles.stepArgs}>
-                        ({Object.values(step.args).join(", ")})
-                      </span>
-                    )}
-                    {" — "}
-                    {step.result_summary}
-                  </span>
-                </div>
-              ))}
+              {streamingSteps.map((step, sIdx) => {
+                const isErr = /\bError\b/i.test(step.result_summary);
+                return (
+                  <div key={sIdx} style={styles.stepItem}>
+                    <span style={styles.stepIcon(isErr)}>{isErr ? "\u2717" : "\u2713"}</span>
+                    <span>
+                      <strong>{step.tool}</strong>
+                      {step.args && Object.keys(step.args).length > 0 && (
+                        <span style={styles.stepArgs}>
+                          ({Object.values(step.args).join(", ")})
+                        </span>
+                      )}
+                      {" — "}
+                      {step.result_summary}
+                    </span>
+                  </div>
+                );
+              })}
               {streamingSteps.length === 0 && (
                 <div style={{ color: styles.stepsContainer.color, padding: "2px 0" }}>
                   Connecting to AI...

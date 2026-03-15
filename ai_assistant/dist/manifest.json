@@ -6,7 +6,7 @@
   "version": "0.2.0",
   "license": "Apache-2.0",
   "frontend": {
-    "remoteEntry": "remoteEntry.ac5216657be66aa9eaf3.js",
+    "remoteEntry": "remoteEntry.28ac85d5a7289b271cd0.js",
     "moduleFederationName": "vambery_ai_assistant"
   },
   "backend": {

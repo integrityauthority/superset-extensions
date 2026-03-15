@@ -500,7 +500,7 @@ def tool_sample_table_data(
         else:
             sql = f'SELECT * FROM "{schema_name}"."{table_name}" LIMIT {max_rows}'
 
-        from superset_core.api.types import QueryOptions
+        from superset_core.queries.types import QueryOptions
 
         options = QueryOptions(
             catalog=catalog,
@@ -555,7 +555,7 @@ def tool_get_distinct_values(
                 f'ORDER BY "{column_name}" LIMIT {max_values}'
             )
 
-        from superset_core.api.types import QueryOptions
+        from superset_core.queries.types import QueryOptions
 
         options = QueryOptions(
             catalog=catalog,
@@ -638,7 +638,7 @@ def tool_execute_sql(
         if syntax_error:
             return {"error": syntax_error, "sql": sql}
 
-        from superset_core.api.types import QueryOptions
+        from superset_core.queries.types import QueryOptions
 
         options = QueryOptions(
             catalog=catalog,
