@@ -67,91 +67,93 @@ declare module "@apache-superset/core" {
     function getCSRFToken(): Promise<string | undefined>;
   }
 
-  // Theme API (from @apache-superset/core/ui via Emotion)
-  export interface SupersetTheme {
-    // Colors - primary
-    colorPrimary: string;
-    colorPrimaryBg: string;
-    colorPrimaryBgHover: string;
-    colorPrimaryText: string;
-    colorPrimaryTextHover: string;
-    colorPrimaryBorder: string;
+  // Theme API (from @apache-superset/core/theme via Emotion)
+  export namespace theme {
+    interface SupersetTheme {
+      // Colors - primary
+      colorPrimary: string;
+      colorPrimaryBg: string;
+      colorPrimaryBgHover: string;
+      colorPrimaryText: string;
+      colorPrimaryTextHover: string;
+      colorPrimaryBorder: string;
 
-    // Colors - semantic
-    colorError: string;
-    colorErrorBg: string;
-    colorErrorBorder: string;
-    colorSuccess: string;
-    colorSuccessBg: string;
-    colorWarning: string;
-    colorInfo: string;
+      // Colors - semantic
+      colorError: string;
+      colorErrorBg: string;
+      colorErrorBorder: string;
+      colorSuccess: string;
+      colorSuccessBg: string;
+      colorWarning: string;
+      colorInfo: string;
 
-    // Colors - text
-    colorText: string;
-    colorTextBase: string;
-    colorTextSecondary: string;
-    colorTextTertiary: string;
-    colorTextPlaceholder: string;
-    colorTextHeading: string;
-    colorTextLabel: string;
+      // Colors - text
+      colorText: string;
+      colorTextBase: string;
+      colorTextSecondary: string;
+      colorTextTertiary: string;
+      colorTextPlaceholder: string;
+      colorTextHeading: string;
+      colorTextLabel: string;
 
-    // Colors - background
-    colorBgBase: string;
-    colorBgContainer: string;
-    colorBgElevated: string;
-    colorBgLayout: string;
+      // Colors - background
+      colorBgBase: string;
+      colorBgContainer: string;
+      colorBgElevated: string;
+      colorBgLayout: string;
 
-    // Colors - border
-    colorBorder: string;
-    colorBorderSecondary: string;
-    colorSplit: string;
+      // Colors - border
+      colorBorder: string;
+      colorBorderSecondary: string;
+      colorSplit: string;
 
-    // Colors - fill
-    colorFill: string;
-    colorFillSecondary: string;
-    colorFillTertiary: string;
-    colorFillQuaternary: string;
+      // Colors - fill
+      colorFill: string;
+      colorFillSecondary: string;
+      colorFillTertiary: string;
+      colorFillQuaternary: string;
 
-    // Colors - other
-    colorLink: string;
-    colorIcon: string;
-    colorIconHover: string;
+      // Colors - other
+      colorLink: string;
+      colorIcon: string;
+      colorIconHover: string;
 
-    // Typography
-    fontFamily: string;
-    fontFamilyCode: string;
-    fontSize: number;
-    fontSizeSM: number;
-    fontSizeLG: number;
-    fontSizeXL: number;
-    fontWeightStrong: number;
-    lineHeight: number;
+      // Typography
+      fontFamily: string;
+      fontFamilyCode: string;
+      fontSize: number;
+      fontSizeSM: number;
+      fontSizeLG: number;
+      fontSizeXL: number;
+      fontWeightStrong: number;
+      lineHeight: number;
 
-    // Spacing
-    sizeUnit: number;
-    sizeXS: number;
-    sizeSM: number;
-    size: number;
-    sizeLG: number;
-    padding: number;
-    paddingXS: number;
-    paddingSM: number;
-    paddingLG: number;
-    margin: number;
-    marginXS: number;
-    marginSM: number;
+      // Spacing
+      sizeUnit: number;
+      sizeXS: number;
+      sizeSM: number;
+      size: number;
+      sizeLG: number;
+      padding: number;
+      paddingXS: number;
+      paddingSM: number;
+      paddingLG: number;
+      margin: number;
+      marginXS: number;
+      marginSM: number;
 
-    // Shape
-    borderRadius: number;
-    borderRadiusSM: number;
-    borderRadiusLG: number;
+      // Shape
+      borderRadius: number;
+      borderRadiusSM: number;
+      borderRadiusLG: number;
 
-    // Control
-    controlHeight: number;
-    controlHeightSM: number;
+      // Control
+      controlHeight: number;
+      controlHeightSM: number;
 
-    [key: string]: unknown;
+      [key: string]: unknown;
+    }
+
+    function useTheme(): SupersetTheme;
   }
-
-  export function useTheme(): SupersetTheme;
 }

@@ -26,7 +26,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { sqlLab, authentication, useTheme, SupersetTheme } from "@apache-superset/core";
+import { sqlLab, authentication, theme as themeApi } from "@apache-superset/core";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import {
@@ -176,7 +176,7 @@ async function postChatStream(
 // Styles - theme-aware (uses Superset theme tokens for light/dark support)
 // --------------------------------------------------------------------------
 
-function getStyles(t: SupersetTheme) {
+function getStyles(t: themeApi.SupersetTheme) {
   return {
     container: {
       display: "flex",
@@ -638,7 +638,7 @@ const MarkdownMessage: React.FC<MarkdownMessageProps> = ({
 // --------------------------------------------------------------------------
 
 const ChatPanel: React.FC = () => {
-  const theme = useTheme();
+  const theme = themeApi.useTheme();
   const styles = useMemo(() => getStyles(theme), [theme]);
   // Detect dark theme by checking if background is darker than midpoint
   const isDarkTheme = useMemo(() => {
