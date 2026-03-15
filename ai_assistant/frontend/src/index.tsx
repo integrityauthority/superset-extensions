@@ -20,20 +20,18 @@
 /**
  * Vambery AI Agent Extension - Entry Point
  *
- * Registers the chat panel view in SQL Lab's right sidebar.
+ * Registers the chat panel view in SQL Lab's right sidebar
+ * as a module-level side effect (called by ExtensionsLoader on import).
  */
 
 import React from "react";
-import { core } from "@apache-superset/core";
+import { views } from "@apache-superset/core";
 import ChatPanel from "./ChatPanel";
 
-export const activate = (context: core.ExtensionContext) => {
-  context.disposables.push(
-    core.registerViewProvider("vambery_ai_assistant.chatPanel", () => <ChatPanel />)
-  );
-  console.log("[Vambery AI Agent] Extension activated");
-};
+views.registerView(
+  { id: "vambery_ai_assistant.chatPanel", name: "Vambery AI Agent" },
+  "sqllab.rightSidebar",
+  () => <ChatPanel />,
+);
 
-export const deactivate = () => {
-  console.log("[Vambery AI Agent] Extension deactivated");
-};
+console.log("[Vambery AI Agent] Extension activated");
