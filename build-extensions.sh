@@ -66,30 +66,33 @@ build_extension() {
     remote_entry=$(ls "${ext_dir}/dist/frontend/dist/" 2>/dev/null | grep "^remoteEntry" | head -1)
 
     python3 -c "
-import json, sys
+import json
 
 with open('${ext_dir}/extension.json') as f:
     ext = json.load(f)
 
 ext_id = ext.get('id', f\"{ext['publisher']}.{ext['name']}\")
+mf = ext.get('frontend', {}).get('moduleFederation', {})
+entry_points = ext.get('backend', {}).get('entryPoints', [])
 
 manifest = {
     'id': ext_id,
+    'publisher': ext['publisher'],
     'name': ext['name'],
+    'displayName': ext['displayName'],
     'version': ext['version'],
     'license': ext.get('license', 'Apache-2.0'),
 }
 
 if ext.get('frontend'):
     manifest['frontend'] = {
-        'contributions': ext['frontend'].get('contributions', {}),
-        'moduleFederation': ext['frontend'].get('moduleFederation', {}),
         'remoteEntry': '${remote_entry}',
+        'moduleFederationName': mf.get('name', ''),
     }
 
 if ext.get('backend'):
     manifest['backend'] = {
-        'entryPoints': ext['backend'].get('entryPoints', []),
+        'entrypoint': entry_points[0] if entry_points else '',
     }
 
 if 'permissions' in ext:
