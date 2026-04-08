@@ -18,12 +18,12 @@ chart visualizations through a conversational interface.
 - **Streaming** — tool call steps stream to the UI in real-time via SSE
 - **Multi-provider model selector** — combined dropdown shows models from all configured providers (e.g. `azure_openai/gpt-5.2-chat`, `ollama/qwen3.5:122b`), placed near the Send button
 - **Edit former prompts** — click the pencil icon on any previous user message to edit and resend it; subsequent messages are automatically flushed
-- **Persistent task completion** — the agent uses up to 50 tool rounds and is forced to deliver a final answer (no more "I haven't finished" cop-outs)
+- **Persistent task completion** — the agent uses up to 50 tool rounds and is forced to deliver a final answer
 
 ## LLM Providers
 
 The extension uses the **OpenAI Chat Completions API** format with function/tool
-calling. Multiple providers are supported — configure one as the active provider.
+calling. Multiple providers are supported — configure one or more.
 
 | Provider | Config key | API key required | Notes |
 |----------|------------|------------------|-------|
@@ -51,7 +51,7 @@ or `ollama/qwen3.5:122b`) without restarting Superset.
 
 ## Configuration
 
-Add to `superset_config.py`:
+### Option 1: superset_config.py (full control)
 
 ```python
 AI_ASSISTANT = {
@@ -77,29 +77,47 @@ AI_ASSISTANT = {
 
     # Ollama (self-hosted)
     "ollama": {
-        "base_url": "http://aia08.inhat.hu:11434",
+        "base_url": "http://your-ollama-host:11434",
         "model": "llama3.1",
     },
 }
 ```
 
-### Environment variable fallback (Docker)
+### Option 2: Environment variables (Docker)
 
 When `AI_ASSISTANT` is not set in `superset_config.py`, the extension reads
-from environment variables:
+from environment variables. Set these in `docker/.env-local`:
 
-| Variable | Maps to |
-|----------|---------|
-| `AI_PROVIDER` | `provider` (`azure_openai`, `openai`, or `ollama`) |
-| `AZURE_OPENAI_API_KEY` | `azure_openai.api_key` |
-| `AZURE_OPENAI_ENDPOINT` | `azure_openai.azure_endpoint` |
-| `AZURE_OPENAI_DEPLOYMENT` | `azure_openai.deployment_name` |
-| `AZURE_OPENAI_API_VERSION` | `azure_openai.api_version` |
-| `OLLAMA_BASE_URL` | `ollama.base_url` |
-| `OLLAMA_MODEL` | `ollama.model` |
-| `AI_SYSTEM_PROMPT_EXTRA` | `system_prompt_extra` |
-| `AI_MAX_TOOL_ROUNDS` | `max_tool_rounds` |
-| `AI_MAX_SAMPLE_ROWS` | `max_sample_rows` |
+```bash
+# Provider: azure_openai | openai | ollama
+AI_PROVIDER=azure_openai
+
+# Azure OpenAI
+AZURE_OPENAI_API_KEY=your-api-key
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT=gpt-4o
+AZURE_OPENAI_API_VERSION=2025-03-01-preview
+
+# OR: Ollama
+# AI_PROVIDER=ollama
+# OLLAMA_BASE_URL=http://your-ollama-host:11434
+# OLLAMA_MODEL=llama3.1
+```
+
+**Full environment variable mapping:**
+
+| Variable | Maps to | Default |
+|----------|---------|---------|
+| `AI_PROVIDER` | `provider` | `azure_openai` |
+| `AZURE_OPENAI_API_KEY` | `azure_openai.api_key` | — |
+| `AZURE_OPENAI_ENDPOINT` | `azure_openai.azure_endpoint` | — |
+| `AZURE_OPENAI_DEPLOYMENT` | `azure_openai.deployment_name` | — |
+| `AZURE_OPENAI_API_VERSION` | `azure_openai.api_version` | `2025-03-01-preview` |
+| `OLLAMA_BASE_URL` | `ollama.base_url` | — |
+| `OLLAMA_MODEL` | `ollama.model` | — |
+| `AI_SYSTEM_PROMPT_EXTRA` | `system_prompt_extra` | `""` |
+| `AI_MAX_TOOL_ROUNDS` | `max_tool_rounds` | `50` |
+| `AI_MAX_SAMPLE_ROWS` | `max_sample_rows` | `20` |
 
 ## Agent Tools
 
@@ -140,6 +158,14 @@ from environment variables:
                        └──────────────────┘
 ```
 
+**Flow:**
+1. User types a question in the Chat Panel
+2. `POST /api/v1/ai_assistant/chat/stream` sends the message (SSE)
+3. `run_agent_stream()` starts the agent loop
+4. Agent calls LLM → LLM returns tool calls → agent executes tools → repeats
+5. SSE events stream each step, action, and final response to the frontend
+6. Frontend applies actions (set SQL in editor, open chart preview)
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
@@ -153,22 +179,34 @@ from environment variables:
 
 ```
 ai_assistant/
-├── extension.json              # Extension manifest
-├── backend/src/ai_assistant/
-│   ├── agent.py                # Agent loop & system prompt
-│   ├── api.py                  # Flask REST endpoints
-│   ├── config.py               # Configuration loading
-│   ├── entrypoint.py           # Blueprint registration
-│   ├── llm.py                  # LLM provider abstraction
-│   └── tools.py                # Tool definitions & execution
-└── frontend/src/
-    ├── index.tsx               # Extension activation
-    └── ChatPanel.tsx           # Chat UI component
+├── extension.json                 # Extension manifest (publisher, name, contributions)
+├── backend/
+│   ├── pyproject.toml             # Python package metadata and dependencies
+│   └── src/ai_assistant/
+│       ├── __init__.py
+│       ├── entrypoint.py          # Blueprint registration (loaded by Superset)
+│       ├── api.py                 # Flask REST endpoints (chat, stream, health, models)
+│       ├── agent.py               # Agent loop, system prompt, tool orchestration
+│       ├── config.py              # Configuration loading (superset_config.py + env vars)
+│       ├── llm.py                 # LLM provider abstraction (Azure, OpenAI, Ollama)
+│       └── tools.py               # Tool definitions & execution
+├── frontend/
+│   ├── package.json               # npm dependencies (scoped @integrityauthority/)
+│   ├── webpack.config.js          # Module Federation config
+│   ├── tsconfig.json
+│   └── src/
+│       ├── index.tsx              # Extension entry — registers view at module load
+│       ├── ChatPanel.tsx          # Chat UI component
+│       └── superset-core.d.ts    # Type declarations for @apache-superset/core
+└── dist/                          # Built bundle (generated by build-extensions.sh)
+    ├── manifest.json
+    ├── frontend/dist/             # Webpack output (remoteEntry.*.js + chunks)
+    └── backend/src/ai_assistant/  # Python source copy
 ```
 
 ## Development
 
-### Frontend build
+### Building the frontend
 
 ```bash
 cd extensions/ai_assistant/frontend
@@ -176,14 +214,48 @@ npm install --legacy-peer-deps
 npm run build
 ```
 
-### Copy to dist
+### Building everything (recommended)
 
 ```bash
-cp -r frontend/dist/* dist/frontend/dist/
-cp backend/src/ai_assistant/*.py dist/backend/src/ai_assistant/
+# From the extensions repo root — builds frontend, copies backend, generates manifest, packages .supx
+bash build-extensions.sh
 ```
 
-Update `dist/manifest.json` with the new `remoteEntry` hash after building.
+Output:
+- `ai_assistant/dist/` — the full extension bundle (used by `LOCAL_EXTENSIONS`)
+- `integrityauthority.vambery-ai-assistant-0.1.0.supx` — portable package (used by `EXTENSIONS_PATH`)
+
+### Frontend dev server (hot reload)
+
+```bash
+cd extensions/ai_assistant/frontend
+npm run start
+# Runs webpack-dev-server on http://localhost:3000
+```
+
+### Manually updating dist after code changes
+
+If you edit files without running the full build script:
+
+```bash
+# Frontend changes
+cd extensions/ai_assistant/frontend && npm run build
+cp -r frontend/dist/* ../dist/frontend/dist/
+
+# Backend changes
+cp backend/src/ai_assistant/*.py dist/backend/src/ai_assistant/
+
+# Update manifest with new remoteEntry hash
+# (or just re-run: bash build-extensions.sh)
+```
+
+## Extension Format
+
+This extension follows the [Apache Superset Extension System](https://superset.apache.org/developer-docs/extensions/overview/) conventions and is forward-compatible with the upcoming `.supx` packaging standard:
+
+- **Frontend**: Uses `views.registerView()` at module load time (no activate/deactivate lifecycle)
+- **Backend**: Flask Blueprint registered via entrypoint (will migrate to `@api` decorator when `superset_core` is available)
+- **Packaging**: `build-extensions.sh` produces both a `dist/` folder (LOCAL_EXTENSIONS) and a `.supx` zip (EXTENSIONS_PATH)
 
 ## Database Support
 

@@ -1,7 +1,13 @@
 [project]
-name = "ai_assistant"
+name = "integrityauthority-vambery_ai_assistant"
 version = "0.1.0"
 license = "Apache-2.0"
 dependencies = [
     "openai>=1.0.0",
 ]
+
+[tool.apache_superset_extensions.build]
+include = [
+    "src/ai_assistant/**/*.py",
+]
+exclude = []

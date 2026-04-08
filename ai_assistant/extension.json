@@ -2,9 +2,9 @@
   "publisher": "integrityauthority",
   "name": "vambery-ai-assistant",
   "displayName": "Vambery AI Agent",
-  "id": "integrityauthority.vambery-ai-assistant",
   "version": "0.1.0",
   "license": "Apache-2.0",
+  "permissions": ["can_read"],
   "frontend": {
     "contributions": {
       "commands": [],
@@ -31,6 +31,5 @@
     "dependencies": {
       "python": ["openai>=1.0.0"]
     }
-  },
-  "permissions": []
+  }
 }

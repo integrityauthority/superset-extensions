@@ -1,16 +1,11 @@
 {
-  "name": "vambery-ai-assistant",
+  "name": "@integrityauthority/vambery-ai-assistant",
   "version": "0.1.0",
-  "main": "dist/main.js",
-  "types": "dist/publicAPI.d.ts",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "webpack serve --mode development",
     "build": "webpack --stats-error-details --mode production"
   },
-  "keywords": [],
   "private": true,
-  "author": "",
   "license": "Apache-2.0",
   "description": "Vambery AI Agent for Apache Superset SQL Lab",
   "peerDependencies": {
