@@ -71,8 +71,10 @@ import json, sys
 with open('${ext_dir}/extension.json') as f:
     ext = json.load(f)
 
+ext_id = ext.get('id', f\"{ext['publisher']}.{ext['name']}\")
+
 manifest = {
-    'id': ext['id'],
+    'id': ext_id,
     'name': ext['name'],
     'version': ext['version'],
     'license': ext.get('license', 'Apache-2.0'),
