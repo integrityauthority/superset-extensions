@@ -173,7 +173,63 @@ AZURE_OPENAI_API_VERSION=2025-03-01-preview
 | `/api/v1/ai_assistant/chat` | POST | Synchronous chat |
 | `/api/v1/ai_assistant/chat/stream` | POST | Streaming chat (SSE) |
 | `/api/v1/ai_assistant/models` | GET | List available LLM models (auto-discovery for Ollama) |
-| `/api/v1/ai_assistant/health` | GET | Health check |
+| `/api/v1/ai_assistant/health` | GET | Detailed health check (deps, config, connectivity) |
+| `/api/v1/ai_assistant/health?quick=1` | GET | Quick health check (config only, no connectivity test) |
+
+### Health Endpoint Details
+
+The health endpoint checks three things:
+
+1. **Dependencies** — is the `openai` Python package installed?
+2. **Configuration** — are the provider credentials properly set?
+3. **Connectivity** — can the extension actually reach the LLM provider?
+
+Example response (all ok):
+
+```json
+{
+  "status": "ok",
+  "version": "0.2.1",
+  "provider": "azure_openai",
+  "dependency_openai": true,
+  "config_ok": true,
+  "connectivity": true
+}
+```
+
+Example response (problems detected — HTTP 503):
+
+```json
+{
+  "status": "degraded",
+  "version": "0.2.1",
+  "provider": "ollama",
+  "dependency_openai": false,
+  "config_ok": true,
+  "connectivity": false,
+  "errors": [
+    "Python package 'openai' is not installed (pip install openai)",
+    "Cannot reach ollama: <urlopen error [Errno 111] Connection refused>"
+  ]
+}
+```
+
+## Python Dependencies
+
+The extension requires the `openai` Python package. It is **auto-installed** at
+extension load time if missing — the entrypoint checks for `openai` and runs
+`pip install openai` automatically.
+
+If auto-install fails (e.g., no internet access or permission issues), install
+it manually before starting Superset:
+
+```bash
+# Inside the Docker container
+pip install openai>=1.0.0
+
+# Or add to docker/requirements-local.txt in your Superset repo
+echo "openai>=1.0.0" >> docker/requirements-local.txt
+```
 
 ## Project Structure
 
@@ -223,7 +279,7 @@ bash build-extensions.sh
 
 Output:
 - `ai_assistant/dist/` — the full extension bundle (used by `LOCAL_EXTENSIONS`)
-- `integrityauthority.vambery-ai-assistant-0.1.0.supx` — portable package (used by `EXTENSIONS_PATH`)
+- `integrityauthority.vambery-ai-assistant-<version>.supx` — portable package (used by `EXTENSIONS_PATH`)
 
 ### Frontend dev server (hot reload)
 

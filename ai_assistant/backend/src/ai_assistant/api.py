@@ -275,28 +275,95 @@ def list_models() -> tuple[Response, int] | Response:
 
 @ai_assistant_bp.route("/health", methods=["GET"])
 def health() -> tuple[Response, int] | Response:
-    """Health check endpoint for the Vambery AI Agent extension."""
+    """Health check endpoint for the Vambery AI Agent extension.
+
+    Returns detailed status including dependency checks and LLM connectivity.
+    Pass ?quick=1 to skip the connectivity check (faster, config-only).
+    """
+    checks: dict[str, object] = {
+        "version": __version__,
+    }
+    errors: list[str] = []
+
+    # 1. Check Python dependencies
+    try:
+        import openai  # noqa: F401
+        checks["dependency_openai"] = True
+    except ImportError:
+        checks["dependency_openai"] = False
+        errors.append("Python package 'openai' is not installed (pip install openai)")
+
+    # 2. Check config
     try:
         config = get_ai_config()
         provider = config.get("provider", "unknown")
+        checks["provider"] = provider
         provider_config = config.get(provider, {})
-        if provider == "ollama":
-            configured = bool(provider_config.get("base_url"))
-        else:
-            has_key = bool(provider_config.get("api_key"))
-            has_ep = bool(
-                provider_config.get("azure_endpoint")
-                or provider_config.get("base_url")
-            )
-            configured = has_key and has_ep
 
-        return jsonify(
-            {
-                "status": "ok",
-                "version": __version__,
-                "provider": provider,
-                "configured": configured,
-            }
-        )
+        if provider == "ollama":
+            checks["config_ok"] = bool(provider_config.get("base_url"))
+            if not checks["config_ok"]:
+                errors.append("Ollama base_url is not configured")
+        elif provider == "azure_openai":
+            has_key = bool(provider_config.get("api_key"))
+            has_ep = bool(provider_config.get("azure_endpoint"))
+            checks["config_ok"] = has_key and has_ep
+            if not has_key:
+                errors.append("Azure OpenAI API key is not configured")
+            if not has_ep:
+                errors.append("Azure OpenAI endpoint is not configured")
+        elif provider == "openai":
+            checks["config_ok"] = bool(provider_config.get("api_key"))
+            if not checks["config_ok"]:
+                errors.append("OpenAI API key is not configured")
+        else:
+            checks["config_ok"] = False
+            errors.append(f"Unknown provider: {provider}")
     except Exception as ex:
-        return jsonify({"status": "error", "error": str(ex)}), 500
+        checks["config_ok"] = False
+        errors.append(f"Config error: {ex}")
+        provider = "unknown"
+        provider_config = {}
+
+    # 3. Connectivity check (skip with ?quick=1)
+    skip_connectivity = request.args.get("quick") == "1"
+    if skip_connectivity:
+        checks["connectivity"] = "skipped"
+    elif checks.get("dependency_openai") and checks.get("config_ok"):
+        try:
+            if provider == "ollama":
+                import urllib.request
+                base_url = provider_config.get("base_url", "").rstrip("/")
+                req = urllib.request.Request(
+                    f"{base_url}/api/tags", method="GET"
+                )
+                req.add_header("Connection", "close")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    checks["connectivity"] = resp.status == 200
+                    if not checks["connectivity"]:
+                        errors.append(f"Ollama returned HTTP {resp.status}")
+            elif provider == "azure_openai":
+                import urllib.request
+                endpoint = provider_config.get("azure_endpoint", "").rstrip("/")
+                req = urllib.request.Request(endpoint, method="GET")
+                req.add_header("Connection", "close")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    checks["connectivity"] = True
+            elif provider == "openai":
+                checks["connectivity"] = True  # no simple ping for OpenAI
+        except Exception as ex:
+            checks["connectivity"] = False
+            errors.append(f"Cannot reach {provider}: {ex}")
+
+    # Build response
+    all_ok = (
+        checks.get("dependency_openai") is True
+        and checks.get("config_ok") is True
+        and checks.get("connectivity") is not False
+    )
+    checks["status"] = "ok" if all_ok else "degraded"
+    if errors:
+        checks["errors"] = errors
+
+    status_code = 200 if all_ok else 503
+    return jsonify(checks), status_code
