@@ -30,6 +30,7 @@ from typing import Generator
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
+from ai_assistant import __version__
 from ai_assistant.agent import run_agent, run_agent_stream
 from ai_assistant.config import get_ai_config, get_provider_config
 
@@ -292,6 +293,7 @@ def health() -> tuple[Response, int] | Response:
         return jsonify(
             {
                 "status": "ok",
+                "version": __version__,
                 "provider": provider,
                 "configured": configured,
             }
