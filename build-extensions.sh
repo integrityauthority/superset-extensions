@@ -109,12 +109,21 @@ print('  manifest.json generated')
     version=$(python3 -c "import json; print(json.load(open('${ext_dir}/extension.json'))['version'])")
     local supx_file="${SCRIPT_DIR}/${publisher}.${ext_pkg_name}-${version}.supx"
 
-    if command -v zip >/dev/null 2>&1; then
-        (cd "${ext_dir}/dist" && zip -r "${supx_file}" .)
-        echo "  Packaged: ${supx_file}"
-    else
-        echo "  WARN: 'zip' not found — skipping .supx packaging (dist/ folder is still usable with LOCAL_EXTENSIONS)"
-    fi
+    python3 -c "
+import zipfile, os
+
+dist_dir = '${ext_dir}/dist'
+supx_path = '${supx_file}'
+
+with zipfile.ZipFile(supx_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk(dist_dir):
+        for fname in files:
+            full_path = os.path.join(root, fname)
+            arcname = os.path.relpath(full_path, dist_dir)
+            zf.write(full_path, arcname)
+
+print(f'  Packaged: {supx_path}')
+"
 
     echo "=== ${ext_name} build complete ==="
 }
