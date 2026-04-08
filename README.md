@@ -151,7 +151,22 @@ AZURE_OPENAI_API_VERSION=2024-12-01-preview
 # OPENAI_MODEL=gpt-4o
 ```
 
-### Step 3: Verify docker-compose build args
+### Step 3: Install Python dependencies
+
+The AI Assistant extension requires the `openai` Python package. Create or edit
+`docker/requirements-local.txt` and add:
+
+```
+openai>=1.0.0
+```
+
+This file is automatically installed by Superset's `docker-bootstrap.sh` during
+container startup. The extension also attempts auto-install at load time, but
+pre-installing via `requirements-local.txt` is more reliable.
+
+> **Tip:** If you're using MSSQL databases, also add `pyodbc>=5.2.0` to the same file.
+
+### Step 4: Verify docker-compose build args
 
 Your `docker-compose-non-dev.yml` must include `DEV_MODE: "false"` for extensions to work:
 
@@ -166,13 +181,13 @@ x-common-build: &common-build
 
 **Without `DEV_MODE: "false"`, extensions will NOT load** — the frontend build is skipped entirely, so the Module Federation remote entry is never generated.
 
-### Step 4: Build and start
+### Step 5: Build and start
 
 ```bash
 docker compose -f docker-compose-non-dev.yml up -d --build
 ```
 
-### Step 5: Verify
+### Step 6: Verify
 
 1. Check containers are running:
    ```bash
@@ -208,10 +223,12 @@ docker compose -f docker-compose-non-dev.yml up -d --build
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
+| "openai package is required" | `openai` not installed | Add `openai>=1.0.0` to `docker/requirements-local.txt`, restart container |
 | "Authentication required" | Not logged in or CSRF issue | Ensure you're logged into Superset |
 | "provider not configured" | Missing env vars | Check `docker/.env-local` has the correct `AI_PROVIDER` and credentials |
 | Connection timeout to LLM | Network issue | For Ollama: ensure the host is reachable from Docker (use IP, not hostname) |
 | "model does not support tools" | Wrong model | Use a model with function calling support (GPT-4o+, llama3.1+, qwen2.5+) |
+| Health shows `dependency_openai: false` | Auto-install failed | Add `openai>=1.0.0` to `docker/requirements-local.txt` and restart |
 
 ### Submodule issues
 

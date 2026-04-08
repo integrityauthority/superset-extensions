@@ -216,19 +216,31 @@ Example response (problems detected — HTTP 503):
 
 ## Python Dependencies
 
-The extension requires the `openai` Python package. It is **auto-installed** at
-extension load time if missing — the entrypoint checks for `openai` and runs
-`pip install openai` automatically.
+The extension requires the `openai` Python package. The **recommended** way to
+install it is via `docker/requirements-local.txt` in your Superset repo:
 
-If auto-install fails (e.g., no internet access or permission issues), install
-it manually before starting Superset:
+```
+# docker/requirements-local.txt
+openai>=1.0.0
+```
+
+This file is automatically installed by Superset's `docker-bootstrap.sh` during
+container startup — before extensions are loaded.
+
+**Auto-install fallback:** The extension also attempts to install `openai` at
+load time using `uv` (preferred) or `pip` (fallback). This works on most setups
+but may fail if the container has no write access to the venv or no internet.
+If auto-install fails, a clear error is logged and the health endpoint reports
+`dependency_openai: false`.
+
+**Manual install** (inside a running container):
 
 ```bash
-# Inside the Docker container
-pip install openai>=1.0.0
+# Using uv (faster, available in Superset Docker images)
+uv pip install openai>=1.0.0
 
-# Or add to docker/requirements-local.txt in your Superset repo
-echo "openai>=1.0.0" >> docker/requirements-local.txt
+# Or using pip
+pip install openai>=1.0.0
 ```
 
 ## Project Structure
