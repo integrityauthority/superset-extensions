@@ -97,7 +97,7 @@ EXTENSIONS_PATH = "/app/extensions"
 # LOCAL_EXTENSIONS = ["/app/extensions/ai_assistant"]
 ```
 
-> **Note:** `EXTENSIONS_PATH` (auto-discovery of .supx files) is available in Superset's upcoming release. Until then, extract the .supx and use `LOCAL_EXTENSIONS` as shown above.
+> **Note:** `EXTENSIONS_PATH` with `.supx` auto-discovery is the recommended deployment method. If your Superset version does not support it, extract the .supx and use `LOCAL_EXTENSIONS` as a fallback.
 
 ---
 
@@ -263,7 +263,7 @@ This repo follows the [Apache Superset Extension System](https://superset.apache
 | `.supx` zip packaging (build script output) | Done |
 | `@integrityauthority/` scoped npm package | Done |
 | `superset-extensions` CLI support | Pending (CLI not yet released) |
-| `EXTENSIONS_PATH` auto-discovery | Pending (Superset Next) |
+| `EXTENSIONS_PATH` auto-discovery | Done (tested on pdapp2) |
 
 When Superset's `superset-extensions` CLI and `EXTENSIONS_PATH` become available, the migration will be minimal — the `.supx` files are already produced by the build script.
 
