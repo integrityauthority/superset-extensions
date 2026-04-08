@@ -189,7 +189,7 @@ Example response (all ok):
 ```json
 {
   "status": "ok",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "provider": "azure_openai",
   "dependency_openai": true,
   "config_ok": true,
@@ -202,7 +202,7 @@ Example response (problems detected — HTTP 503):
 ```json
 {
   "status": "degraded",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "provider": "ollama",
   "dependency_openai": false,
   "config_ok": true,
@@ -216,19 +216,25 @@ Example response (problems detected — HTTP 503):
 
 ## Python Dependencies
 
-The extension requires the `openai` Python package. The **recommended** way to
-install it is via `docker/requirements-local.txt` in your Superset repo:
+The extension requires the `openai` Python package. The Superset `.supx` format
+does not support automatic dependency installation — you must pre-install them.
 
-```
-# docker/requirements-local.txt
-openai>=1.0.0
+**Recommended:** The build script generates a `*-requirements.txt` file alongside
+the `.supx` package. Copy its contents into `docker/requirements-local.txt`:
+
+```bash
+# Auto-generated file from build-extensions.sh:
+cat integrityauthority.vambery-ai-assistant-*-requirements.txt >> docker/requirements-local.txt
+
+# Or add manually:
+echo "openai>=1.0.0" >> docker/requirements-local.txt
 ```
 
 This file is automatically installed by Superset's `docker-bootstrap.sh` during
 container startup — before extensions are loaded.
 
-**Auto-install fallback:** The extension also attempts to install `openai` at
-load time using `uv` (preferred) or `pip` (fallback). This works on most setups
+**Runtime fallback:** The extension also attempts to install `openai` at
+load time using `uv` (preferred) or `pip` (fallback). This works on some setups
 but may fail if the container has no write access to the venv or no internet.
 If auto-install fails, a clear error is logged and the health endpoint reports
 `dependency_openai: false`.
@@ -292,6 +298,7 @@ bash build-extensions.sh
 Output:
 - `ai_assistant/dist/` — the full extension bundle (used by `LOCAL_EXTENSIONS`)
 - `integrityauthority.vambery-ai-assistant-<version>.supx` — portable package (used by `EXTENSIONS_PATH`)
+- `integrityauthority.vambery-ai-assistant-<version>-requirements.txt` — Python deps to copy into `docker/requirements-local.txt`
 
 ### Frontend dev server (hot reload)
 

@@ -74,12 +74,14 @@ The build script produces a `.supx` file (a zip archive with the extension bundl
 
 ```bash
 bash extensions/build-extensions.sh
-# Output: integrityauthority.vambery-ai-assistant-0.1.0.supx
+# Output:
+#   integrityauthority.vambery-ai-assistant-<version>.supx            (extension package)
+#   integrityauthority.vambery-ai-assistant-<version>-requirements.txt (Python deps)
 ```
 
 **Option B — Download a pre-built release:**
 
-Download the `.supx` file from [GitHub Releases](https://github.com/integrityauthority/superset-extensions/releases).
+Download the `.supx` file **and** the matching `requirements.txt` from [GitHub Releases](https://github.com/integrityauthority/superset-extensions/releases).
 
 **Deploy the .supx file:**
 
@@ -153,16 +155,26 @@ AZURE_OPENAI_API_VERSION=2024-12-01-preview
 
 ### Step 3: Install Python dependencies
 
-The AI Assistant extension requires the `openai` Python package. Create or edit
-`docker/requirements-local.txt` and add:
+Extensions may require extra Python packages that are not bundled in the Superset
+Docker image. The build script auto-generates a `*-requirements.txt` file next to
+the `.supx` — copy its contents into `docker/requirements-local.txt`:
 
-```
-openai>=1.0.0
+```bash
+# If you built locally, the file is already in extensions/:
+cat extensions/integrityauthority.vambery-ai-assistant-*-requirements.txt \
+    >> docker/requirements-local.txt
+
+# Or just add manually:
+echo "openai>=1.0.0" >> docker/requirements-local.txt
 ```
 
 This file is automatically installed by Superset's `docker-bootstrap.sh` during
-container startup. The extension also attempts auto-install at load time, but
-pre-installing via `requirements-local.txt` is more reliable.
+container startup — before extensions are loaded.
+
+> **Why not auto-install?** The `.supx` format runs backend code in-memory and
+> does not support automatic dependency installation. The extension attempts a
+> runtime `pip install` fallback, but it may fail if the container has no internet
+> or write access. Pre-installing via `requirements-local.txt` is reliable.
 
 > **Tip:** If you're using MSSQL databases, also add `pyodbc>=5.2.0` to the same file.
 
