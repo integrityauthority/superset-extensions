@@ -149,8 +149,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "list_tables",
             "description": (
-                "List all tables in a specific schema. "
-                "Use this to discover which tables are available."
+                "List all tables (NOT views) in a specific schema. "
+                "Use this to discover which tables are available. "
+                "To also see database views, use list_views separately."
             ),
             "parameters": {
                 "type": "object",
@@ -167,12 +168,36 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "list_views",
+            "description": (
+                "List all database views in a specific schema. "
+                "Views are pre-defined SQL queries stored in the database — they often "
+                "contain important aggregations, joins, or filtered data. "
+                "Always check views alongside tables when exploring a schema. "
+                "You can use get_table_columns, sample_table_data, and execute_sql on views "
+                "the same way you would on tables."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schema_name": {
+                        "type": "string",
+                        "description": "The schema name to list views from",
+                    },
+                },
+                "required": ["schema_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_table_columns",
             "description": (
-                "Get column names, data types, nullable info, and metadata for a table. "
+                "Get column names, data types, nullable info, and metadata for a table or view. "
                 "Returns column comments/descriptions, verbose names, table comment, "
                 "and any predefined Superset metrics. "
-                "Use this to understand the structure AND business meaning of a table."
+                "Use this to understand the structure AND business meaning of a table or view."
             ),
             "parameters": {
                 "type": "object",
@@ -195,8 +220,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "sample_table_data",
             "description": (
-                "Get a sample of rows from a table (up to 20 rows). "
-                "Use this to understand what kind of data a table contains."
+                "Get a sample of rows from a table or view (up to 20 rows). "
+                "Use this to understand what kind of data a table or view contains."
             ),
             "parameters": {
                 "type": "object",
@@ -356,6 +381,203 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    # ------------------------------------------------------------------
+    # Dataset management tools
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "list_datasets",
+            "description": (
+                "List Superset datasets (registered tables/views/SQL). "
+                "Returns id, name, type (physical or virtual), schema, and database name. "
+                "Use this to find existing datasets before creating new ones, or to see "
+                "what data sources are already configured in Superset."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search": {
+                        "type": "string",
+                        "description": (
+                            "Optional search term to filter dataset names (case-insensitive). "
+                            "Leave empty to list all datasets for the current database."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_dataset",
+            "description": (
+                "Get full details of a Superset dataset by its ID. "
+                "Returns columns (with descriptions, verbose names), metrics, "
+                "SQL (for virtual datasets), description, and database info. "
+                "Use this to inspect how a dataset is configured before using or editing it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset_id": {
+                        "type": "integer",
+                        "description": "The Superset dataset ID (from list_datasets)",
+                    },
+                },
+                "required": ["dataset_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_dataset",
+            "description": (
+                "Update an existing Superset dataset. Can modify description, "
+                "column descriptions/verbose_names, SQL (for virtual datasets), "
+                "and metrics. ONLY use this when the user explicitly asks to edit "
+                "a dataset. All changes are logged."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset_id": {
+                        "type": "integer",
+                        "description": "The Superset dataset ID to update",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "New description for the dataset. Optional.",
+                    },
+                    "sql": {
+                        "type": "string",
+                        "description": (
+                            "New SQL for virtual datasets. Only works on virtual datasets. Optional."
+                        ),
+                    },
+                    "columns": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column_name": {"type": "string"},
+                                "verbose_name": {"type": "string"},
+                                "description": {"type": "string"},
+                            },
+                            "required": ["column_name"],
+                        },
+                        "description": (
+                            "Column metadata updates. Only specified fields are changed. Optional."
+                        ),
+                    },
+                },
+                "required": ["dataset_id"],
+            },
+        },
+    },
+    # ------------------------------------------------------------------
+    # Chart management tools
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "list_charts",
+            "description": (
+                "List existing Superset charts/visualizations. "
+                "Returns id, name, viz_type, dataset info, and last modified date. "
+                "Use this to find charts the user wants to inspect or modify."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search": {
+                        "type": "string",
+                        "description": (
+                            "Optional search term to filter chart names (case-insensitive)."
+                        ),
+                    },
+                    "dataset_id": {
+                        "type": "integer",
+                        "description": (
+                            "Optional: filter charts by dataset ID to find charts "
+                            "using a specific data source."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_chart",
+            "description": (
+                "Get full details of a Superset chart by its ID. "
+                "Returns chart name, viz_type, params (form_data), datasource info, "
+                "description, and the explore URL. "
+                "Use this to understand how a chart is configured."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chart_id": {
+                        "type": "integer",
+                        "description": "The Superset chart ID (from list_charts)",
+                    },
+                },
+                "required": ["chart_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_chart",
+            "description": (
+                "Update an existing Superset chart. Can modify name, description, "
+                "viz_type, params (form_data), and datasource. ONLY use this when "
+                "the user explicitly asks to edit a chart. All changes are logged."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chart_id": {
+                        "type": "integer",
+                        "description": "The Superset chart ID to update",
+                    },
+                    "chart_name": {
+                        "type": "string",
+                        "description": "New name for the chart. Optional.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "New description for the chart. Optional.",
+                    },
+                    "viz_type": {
+                        "type": "string",
+                        "enum": ["bar", "line", "pie", "table"],
+                        "description": "New chart type. Optional.",
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": (
+                            "Partial params/form_data to merge into the existing chart config. "
+                            "Only specified keys are overwritten. Optional."
+                        ),
+                    },
+                    "datasource_id": {
+                        "type": "integer",
+                        "description": "New dataset ID for the chart. Optional.",
+                    },
+                },
+                "required": ["chart_id"],
+            },
+        },
+    },
 ]
 
 
@@ -398,6 +620,28 @@ def tool_list_tables(
     except Exception as ex:
         logger.error(
             "Error listing tables for db %s, schema %s: %s",
+            database_id,
+            schema_name,
+            ex,
+        )
+        return {"error": str(ex)}
+
+
+def tool_list_views(
+    database_id: int, schema_name: str, catalog: str | None = None
+) -> dict[str, Any]:
+    """List all views in a specific schema."""
+    try:
+        database = _get_database(database_id)
+        views = database.get_all_view_names_in_schema(
+            catalog=catalog, schema=schema_name
+        )
+        # views is a set of (view_name, schema, catalog) tuples
+        view_names = sorted(v[0] for v in views)
+        return {"views": view_names, "schema": schema_name}
+    except Exception as ex:
+        logger.error(
+            "Error listing views for db %s, schema %s: %s",
             database_id,
             schema_name,
             ex,
@@ -657,6 +901,328 @@ def tool_execute_sql(
     except Exception as ex:
         logger.error("Error executing SQL in db %s: %s\nSQL: %s", database_id, ex, sql)
         return {"error": str(ex), "sql": sql}
+
+
+# --------------------------------------------------------------------------
+# Dataset management
+# --------------------------------------------------------------------------
+
+
+def tool_list_datasets(
+    database_id: int,
+    search: str | None = None,
+) -> dict[str, Any]:
+    """List Superset datasets, optionally filtered by search term."""
+    try:
+        query = db.session.query(SqlaTable).filter(
+            SqlaTable.database_id == database_id,
+        )
+        if search:
+            query = query.filter(
+                SqlaTable.table_name.ilike(f"%{search}%")
+            )
+        query = query.order_by(SqlaTable.table_name)
+        datasets = query.limit(100).all()
+
+        results = []
+        for ds in datasets:
+            is_virtual = bool(ds.sql)
+            results.append({
+                "id": ds.id,
+                "name": ds.table_name,
+                "type": "virtual" if is_virtual else "physical",
+                "schema": ds.schema or None,
+                "description": ds.description or None,
+            })
+
+        return {"datasets": results, "count": len(results)}
+    except Exception as ex:
+        logger.error("Error listing datasets for db %s: %s", database_id, ex)
+        return {"error": str(ex)}
+
+
+def tool_get_dataset(dataset_id: int) -> dict[str, Any]:
+    """Get full details of a Superset dataset by ID."""
+    try:
+        dataset = db.session.query(SqlaTable).filter_by(id=dataset_id).first()
+        if not dataset:
+            return {"error": f"Dataset with id={dataset_id} not found"}
+
+        # Column metadata
+        columns_info = []
+        for col in dataset.columns:
+            entry: dict[str, Any] = {
+                "column_name": col.column_name,
+                "type": col.type or "unknown",
+                "is_active": col.is_active if hasattr(col, "is_active") else True,
+            }
+            if col.verbose_name:
+                entry["verbose_name"] = col.verbose_name
+            if col.description:
+                entry["description"] = col.description
+            if col.filterable is not None:
+                entry["filterable"] = col.filterable
+            if col.groupby is not None:
+                entry["groupby"] = col.groupby
+            columns_info.append(entry)
+
+        # Metrics
+        metrics_info = []
+        for m in dataset.metrics:
+            metric_entry: dict[str, Any] = {
+                "metric_name": m.metric_name,
+                "expression": m.expression,
+            }
+            if m.verbose_name:
+                metric_entry["verbose_name"] = m.verbose_name
+            if m.description:
+                metric_entry["description"] = m.description
+            if m.metric_type:
+                metric_entry["metric_type"] = m.metric_type
+            metrics_info.append(metric_entry)
+
+        result: dict[str, Any] = {
+            "id": dataset.id,
+            "name": dataset.table_name,
+            "type": "virtual" if dataset.sql else "physical",
+            "schema": dataset.schema or None,
+            "database_id": dataset.database_id,
+            "description": dataset.description or None,
+            "columns": columns_info,
+            "metrics": metrics_info,
+        }
+
+        if dataset.sql:
+            result["sql"] = dataset.sql
+
+        return result
+    except Exception as ex:
+        logger.error("Error getting dataset %s: %s", dataset_id, ex)
+        return {"error": str(ex)}
+
+
+def tool_update_dataset(
+    dataset_id: int,
+    description: str | None = None,
+    sql: str | None = None,
+    columns: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Update an existing Superset dataset. Logs all changes."""
+    try:
+        dataset = db.session.query(SqlaTable).filter_by(id=dataset_id).first()
+        if not dataset:
+            return {"error": f"Dataset with id={dataset_id} not found"}
+
+        changes: list[str] = []
+
+        # Update description
+        if description is not None:
+            old_desc = dataset.description
+            dataset.description = description
+            changes.append(f"description: '{old_desc}' -> '{description}'")
+
+        # Update SQL (virtual datasets only)
+        if sql is not None:
+            if not dataset.sql:
+                return {"error": "Cannot set SQL on a physical dataset — only virtual datasets have SQL"}
+            old_sql = dataset.sql
+            dataset.sql = sql
+            changes.append(f"sql updated (was {len(old_sql or '')} chars, now {len(sql)} chars)")
+
+        # Update column metadata
+        if columns:
+            col_map = {c.column_name: c for c in dataset.columns}
+            for col_update in columns:
+                col_name = col_update.get("column_name")
+                if not col_name or col_name not in col_map:
+                    changes.append(f"column '{col_name}' not found, skipped")
+                    continue
+                col_obj = col_map[col_name]
+                if "verbose_name" in col_update:
+                    col_obj.verbose_name = col_update["verbose_name"]
+                    changes.append(f"column '{col_name}' verbose_name set to '{col_update['verbose_name']}'")
+                if "description" in col_update:
+                    col_obj.description = col_update["description"]
+                    changes.append(f"column '{col_name}' description updated")
+
+        if not changes:
+            return {"message": "No changes specified", "dataset_id": dataset_id}
+
+        db.session.commit()
+        logger.info(
+            "Updated dataset %s (%s): %s",
+            dataset_id, dataset.table_name, "; ".join(changes),
+        )
+
+        return {
+            "message": "Dataset updated successfully",
+            "dataset_id": dataset_id,
+            "dataset_name": dataset.table_name,
+            "changes": changes,
+        }
+    except Exception as ex:
+        db.session.rollback()
+        logger.error("Error updating dataset %s: %s", dataset_id, ex, exc_info=True)
+        return {"error": f"Failed to update dataset: {str(ex)}"}
+
+
+# --------------------------------------------------------------------------
+# Chart management (read / update existing charts)
+# --------------------------------------------------------------------------
+
+
+def tool_list_charts(
+    search: str | None = None,
+    dataset_id: int | None = None,
+) -> dict[str, Any]:
+    """List existing Superset charts, optionally filtered."""
+    try:
+        from superset.models.slice import Slice
+
+        query = db.session.query(Slice)
+
+        if search:
+            query = query.filter(Slice.slice_name.ilike(f"%{search}%"))
+        if dataset_id is not None:
+            query = query.filter(
+                Slice.datasource_id == dataset_id,
+                Slice.datasource_type == "table",
+            )
+
+        query = query.order_by(Slice.changed_on.desc())
+        charts = query.limit(50).all()
+
+        results = []
+        for chart in charts:
+            results.append({
+                "id": chart.id,
+                "name": chart.slice_name,
+                "viz_type": chart.viz_type,
+                "datasource_id": chart.datasource_id,
+                "datasource_type": chart.datasource_type,
+                "description": chart.description or None,
+                "changed_on": str(chart.changed_on) if chart.changed_on else None,
+                "url": f"/explore/?slice_id={chart.id}",
+            })
+
+        return {"charts": results, "count": len(results)}
+    except Exception as ex:
+        logger.error("Error listing charts: %s", ex)
+        return {"error": str(ex)}
+
+
+def tool_get_chart(chart_id: int) -> dict[str, Any]:
+    """Get full details of a Superset chart by ID."""
+    try:
+        import json as stdlib_json
+        from superset.models.slice import Slice
+
+        chart = db.session.query(Slice).filter_by(id=chart_id).first()
+        if not chart:
+            return {"error": f"Chart with id={chart_id} not found"}
+
+        # Parse params JSON
+        params = {}
+        if chart.params:
+            try:
+                params = stdlib_json.loads(chart.params)
+            except stdlib_json.JSONDecodeError:
+                params = {"_raw": chart.params}
+
+        result: dict[str, Any] = {
+            "id": chart.id,
+            "name": chart.slice_name,
+            "viz_type": chart.viz_type,
+            "datasource_id": chart.datasource_id,
+            "datasource_type": chart.datasource_type,
+            "description": chart.description or None,
+            "params": params,
+            "url": f"/explore/?slice_id={chart.id}",
+            "changed_on": str(chart.changed_on) if chart.changed_on else None,
+        }
+
+        # Add datasource name if available
+        if chart.datasource_name:
+            result["datasource_name"] = chart.datasource_name
+
+        return result
+    except Exception as ex:
+        logger.error("Error getting chart %s: %s", chart_id, ex)
+        return {"error": str(ex)}
+
+
+def tool_update_chart(
+    chart_id: int,
+    chart_name: str | None = None,
+    description: str | None = None,
+    viz_type: str | None = None,
+    params: dict[str, Any] | None = None,
+    datasource_id: int | None = None,
+) -> dict[str, Any]:
+    """Update an existing Superset chart. Logs all changes."""
+    try:
+        import json as stdlib_json
+        from superset.models.slice import Slice
+
+        chart = db.session.query(Slice).filter_by(id=chart_id).first()
+        if not chart:
+            return {"error": f"Chart with id={chart_id} not found"}
+
+        changes: list[str] = []
+
+        if chart_name is not None:
+            old_name = chart.slice_name
+            chart.slice_name = chart_name
+            changes.append(f"name: '{old_name}' -> '{chart_name}'")
+
+        if description is not None:
+            chart.description = description
+            changes.append("description updated")
+
+        if viz_type is not None:
+            superset_viz = VIZ_TYPE_MAP.get(viz_type, viz_type)
+            old_viz = chart.viz_type
+            chart.viz_type = superset_viz
+            changes.append(f"viz_type: '{old_viz}' -> '{superset_viz}'")
+
+        if params is not None:
+            # Merge new params into existing params
+            existing_params = {}
+            if chart.params:
+                try:
+                    existing_params = stdlib_json.loads(chart.params)
+                except stdlib_json.JSONDecodeError:
+                    existing_params = {}
+            existing_params.update(params)
+            chart.params = stdlib_json.dumps(existing_params)
+            changes.append(f"params updated ({len(params)} keys changed)")
+
+        if datasource_id is not None:
+            old_ds = chart.datasource_id
+            chart.datasource_id = datasource_id
+            chart.datasource_type = "table"
+            changes.append(f"datasource_id: {old_ds} -> {datasource_id}")
+
+        if not changes:
+            return {"message": "No changes specified", "chart_id": chart_id}
+
+        db.session.commit()
+        logger.info(
+            "Updated chart %s (%s): %s",
+            chart_id, chart.slice_name, "; ".join(changes),
+        )
+
+        return {
+            "message": "Chart updated successfully",
+            "chart_id": chart_id,
+            "chart_name": chart.slice_name,
+            "changes": changes,
+            "url": f"/explore/?slice_id={chart.id}",
+        }
+    except Exception as ex:
+        db.session.rollback()
+        logger.error("Error updating chart %s: %s", chart_id, ex, exc_info=True)
+        return {"error": f"Failed to update chart: {str(ex)}"}
 
 
 # --------------------------------------------------------------------------
@@ -936,6 +1502,13 @@ def execute_tool(
             catalog=catalog,
         )
 
+    if tool_name == "list_views":
+        return tool_list_views(
+            database_id,
+            schema_name=arguments["schema_name"],
+            catalog=catalog,
+        )
+
     if tool_name == "get_table_columns":
         return tool_get_table_columns(
             database_id,
@@ -983,6 +1556,48 @@ def execute_tool(
             schema_name=schema_name,
             catalog=catalog,
             save_chart=arguments.get("save_chart", False),
+        )
+
+    # Dataset management tools
+    if tool_name == "list_datasets":
+        return tool_list_datasets(
+            database_id=database_id,
+            search=arguments.get("search"),
+        )
+
+    if tool_name == "get_dataset":
+        return tool_get_dataset(
+            dataset_id=arguments["dataset_id"],
+        )
+
+    if tool_name == "update_dataset":
+        return tool_update_dataset(
+            dataset_id=arguments["dataset_id"],
+            description=arguments.get("description"),
+            sql=arguments.get("sql"),
+            columns=arguments.get("columns"),
+        )
+
+    # Chart management tools
+    if tool_name == "list_charts":
+        return tool_list_charts(
+            search=arguments.get("search"),
+            dataset_id=arguments.get("dataset_id"),
+        )
+
+    if tool_name == "get_chart":
+        return tool_get_chart(
+            chart_id=arguments["chart_id"],
+        )
+
+    if tool_name == "update_chart":
+        return tool_update_chart(
+            chart_id=arguments["chart_id"],
+            chart_name=arguments.get("chart_name"),
+            description=arguments.get("description"),
+            viz_type=arguments.get("viz_type"),
+            params=arguments.get("params"),
+            datasource_id=arguments.get("datasource_id"),
         )
 
     return {"error": f"Unknown tool: {tool_name}"}

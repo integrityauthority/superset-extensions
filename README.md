@@ -1,6 +1,6 @@
 # Superset Extensions by Integrity Authority
 
-Community extensions for [Apache Superset](https://github.com/apache/superset), built using Superset's native [Extension System](https://superset.apache.org/developer-docs/extensions/overview/).
+Community extensions for [Apache Superset](https://github.com/apache/superset) (6.1.x+), built using Superset's native [Extension System](https://superset.apache.org/developer-docs/extensions/overview/) and the `.supx` package format.
 
 ---
 
@@ -12,11 +12,14 @@ An AI-powered data assistant that lives inside SQL Lab. Ask questions in natural
 
 **Highlights:**
 - Natural language to SQL with schema introspection and metadata awareness
+- Explores both **tables and views** automatically
 - Interactive chart creation (bar, line, pie, table)
+- **Dataset and chart management** — browse, inspect, and edit existing Superset objects
 - Send to Editor buttons on all SQL code blocks
 - Streaming responses with real-time tool-use visibility
-- Multiple LLM providers: Azure OpenAI, OpenAI, Ollama (self-hosted)
+- Multiple LLM providers: Azure OpenAI, OpenAI, Ollama (local/self-hosted)
 - Ollama model auto-discovery with per-question model selector
+- 15 agent tools for comprehensive data exploration and management
 
 See the **[full documentation](ai_assistant/README.md)** for configuration, architecture, and API reference.
 
@@ -24,11 +27,42 @@ See the **[full documentation](ai_assistant/README.md)** for configuration, arch
 
 ## Installation
 
-There are two ways to install extensions: **LOCAL_EXTENSIONS** (recommended for development and git-based deployments) and **.supx package** (recommended for simple deployments and sharing with colleagues).
+### Method 1: .supx Package (recommended)
 
-### Method 1: Git Submodule + LOCAL_EXTENSIONS (recommended)
+The `.supx` format is the official Superset extension package — a self-contained zip archive that Superset auto-discovers and loads. This is the recommended way to deploy extensions.
 
-Best for teams that deploy Superset from a git fork.
+**Option A — Download a pre-built release:**
+
+Download the `.supx` file **and** the matching `requirements.txt` from [GitHub Releases](https://github.com/integrityauthority/superset-extensions/releases).
+
+**Option B — Build it yourself:**
+
+```bash
+bash extensions/build-extensions.sh
+# Output:
+#   integrityauthority.vambery-ai-assistant-<version>.supx            (extension package)
+#   integrityauthority.vambery-ai-assistant-<version>-requirements.txt (Python deps)
+```
+
+**Deploy the .supx file:**
+
+1. Place the `.supx` file in your extensions directory (e.g. `/app/extensions/`)
+2. Install Python dependencies (see [ai_assistant/README.md](ai_assistant/README.md#python-dependencies))
+3. Configure `superset_config.py`:
+
+```python
+FEATURE_FLAGS = {
+    "ENABLE_EXTENSIONS": True,
+}
+
+EXTENSIONS_PATH = "/app/extensions"
+```
+
+> See the **[full Docker deployment guide](ai_assistant/README.md#docker-deployment-step-by-step)** for the complete walkthrough.
+
+### Method 2: Git Submodule + LOCAL_EXTENSIONS (development)
+
+> **Note:** `LOCAL_EXTENSIONS` is supported for development workflows and git-based deployments. For production, we recommend `.supx` (Method 1).
 
 ```bash
 # Inside your Superset repo
@@ -45,13 +79,7 @@ git clone --recurse-submodules https://github.com/integrityauthority/superset.gi
 **Build the extension:**
 
 ```bash
-# Build all extensions (frontend + backend + manifest + .supx)
 bash extensions/build-extensions.sh
-
-# Or manually for a single extension
-cd extensions/ai_assistant/frontend
-npm install --legacy-peer-deps
-npm run build
 ```
 
 **Configure Superset** — add to `superset_config.py`:
@@ -64,160 +92,6 @@ FEATURE_FLAGS = {
 LOCAL_EXTENSIONS = ["/app/extensions/ai_assistant"]
 ```
 
-### Method 2: .supx Package (simple deployment)
-
-Best for sharing extensions with colleagues or deploying without git submodules.
-
-The build script produces a `.supx` file (a zip archive with the extension bundle). This is a self-contained, portable package following the [official Superset extension format](https://superset.apache.org/developer-docs/extensions/deployment/).
-
-**Option A — Build it yourself:**
-
-```bash
-bash extensions/build-extensions.sh
-# Output:
-#   integrityauthority.vambery-ai-assistant-<version>.supx            (extension package)
-#   integrityauthority.vambery-ai-assistant-<version>-requirements.txt (Python deps)
-```
-
-**Option B — Download a pre-built release:**
-
-Download the `.supx` file **and** the matching `requirements.txt` from [GitHub Releases](https://github.com/integrityauthority/superset-extensions/releases).
-
-**Deploy the .supx file:**
-
-```python
-# superset_config.py
-FEATURE_FLAGS = {
-    "ENABLE_EXTENSIONS": True,
-}
-
-# For .supx files (when Superset supports EXTENSIONS_PATH):
-EXTENSIONS_PATH = "/app/extensions"
-
-# For LOCAL_EXTENSIONS fallback (extract .supx and point to folder):
-# unzip integrityauthority.vambery-ai-assistant-0.1.0.supx -d /app/extensions/ai_assistant/dist/
-# LOCAL_EXTENSIONS = ["/app/extensions/ai_assistant"]
-```
-
-> **Note:** `EXTENSIONS_PATH` with `.supx` auto-discovery is the recommended deployment method. If your Superset version does not support it, extract the .supx and use `LOCAL_EXTENSIONS` as a fallback.
-
----
-
-## Docker Deployment (Step-by-Step)
-
-This is the full walkthrough for deploying Superset with extensions on a server using Docker Compose.
-
-### Prerequisites
-
-- Docker and Docker Compose installed
-- Git access to `integrityauthority/superset` (or the upstream Apache Superset repo)
-- LLM provider credentials (Azure OpenAI API key, or Ollama server running)
-
-### Step 1: Clone the repo with submodules
-
-```bash
-git clone --recurse-submodules https://github.com/integrityauthority/superset.git
-cd superset
-```
-
-If you already have the repo but the `extensions/` folder is empty:
-
-```bash
-git submodule update --init --remote extensions
-```
-
-### Step 2: Configure environment variables
-
-Create or edit `docker/.env-local`:
-
-```bash
-# === AI Assistant Configuration ===
-
-# Provider: azure_openai | openai | ollama
-AI_PROVIDER=azure_openai
-
-# --- Azure OpenAI ---
-AZURE_OPENAI_API_KEY=your-api-key-here
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT=gpt-4o
-AZURE_OPENAI_API_VERSION=2024-12-01-preview
-
-# --- OR: Ollama (self-hosted, no API key) ---
-# AI_PROVIDER=ollama
-# OLLAMA_BASE_URL=http://your-ollama-host:11434
-# OLLAMA_MODEL=qwen3.5:122b
-
-# --- OR: OpenAI ---
-# AI_PROVIDER=openai
-# OPENAI_API_KEY=sk-...
-# OPENAI_MODEL=gpt-4o
-```
-
-### Step 3: Install Python dependencies
-
-Extensions may require extra Python packages that are not bundled in the Superset
-Docker image. The build script auto-generates a `*-requirements.txt` file next to
-the `.supx` — copy its contents into `docker/requirements-local.txt`:
-
-```bash
-# If you built locally, the file is already in extensions/:
-cat extensions/integrityauthority.vambery-ai-assistant-*-requirements.txt \
-    >> docker/requirements-local.txt
-
-# Or just add manually:
-echo "openai>=1.0.0" >> docker/requirements-local.txt
-```
-
-This file is automatically installed by Superset's `docker-bootstrap.sh` during
-container startup — before extensions are loaded.
-
-> **Why not auto-install?** The `.supx` format runs backend code in-memory and
-> does not support automatic dependency installation. The extension attempts a
-> runtime `pip install` fallback, but it may fail if the container has no internet
-> or write access. Pre-installing via `requirements-local.txt` is reliable.
-
-> **Tip:** If you're using MSSQL databases, also add `pyodbc>=5.2.0` to the same file.
-
-### Step 4: Verify docker-compose build args
-
-Your `docker-compose-non-dev.yml` must include `DEV_MODE: "false"` for extensions to work:
-
-```yaml
-x-common-build: &common-build
-  context: .
-  target: dev
-  args:
-    DEV_MODE: "false"          # REQUIRED for Module Federation / extensions
-    INSTALL_MSSQL_ODBC: "true" # If using MSSQL databases
-```
-
-**Without `DEV_MODE: "false"`, extensions will NOT load** — the frontend build is skipped entirely, so the Module Federation remote entry is never generated.
-
-### Step 5: Build and start
-
-```bash
-docker compose -f docker-compose-non-dev.yml up -d --build
-```
-
-### Step 6: Verify
-
-1. Check containers are running:
-   ```bash
-   docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-   ```
-
-2. Check extension loaded (look for "Vambery AI Agent extension registered"):
-   ```bash
-   docker logs superset_app --tail 50 2>&1 | grep -i "vambery\|extension"
-   ```
-
-3. Open SQL Lab in the browser, expand the right sidebar — the **Vambery AI Agent** panel should be visible.
-
-4. Health check:
-   ```bash
-   curl http://localhost:8088/api/v1/ai_assistant/health
-   ```
-
 ---
 
 ## Troubleshooting
@@ -228,7 +102,7 @@ docker compose -f docker-compose-non-dev.yml up -d --build
 |---------|-------|-----|
 | Panel missing from sidebar | `DEV_MODE` not set to `"false"` | Set `DEV_MODE: "false"` in docker-compose build args, rebuild |
 | Panel missing from sidebar | `ENABLE_EXTENSIONS` not enabled | Add `FEATURE_FLAGS = {"ENABLE_EXTENSIONS": True}` to superset_config.py |
-| Panel missing from sidebar | `LOCAL_EXTENSIONS` path wrong | Verify the path exists inside the container: `docker exec superset_app ls /app/extensions/ai_assistant/dist/` |
+| Panel missing from sidebar | Extension path wrong | For .supx: verify `EXTENSIONS_PATH` points to the directory containing the .supx file. For LOCAL_EXTENSIONS: verify the path exists inside the container |
 | Panel missing from sidebar | Frontend not built | Run `bash extensions/build-extensions.sh` before building Docker image |
 
 ### Backend API works but chat returns errors
@@ -242,7 +116,7 @@ docker compose -f docker-compose-non-dev.yml up -d --build
 | "model does not support tools" | Wrong model | Use a model with function calling support (GPT-4o+, llama3.1+, qwen2.5+) |
 | Health shows `dependency_openai: false` | Auto-install failed | Add `openai>=1.0.0` to `docker/requirements-local.txt` and restart |
 
-### Submodule issues
+### Submodule issues (LOCAL_EXTENSIONS method only)
 
 ```bash
 # Submodule folder exists but is empty
@@ -271,30 +145,36 @@ We welcome contributions! Here's how:
 
 ## Roadmap
 
-- [ ] Dashboard-level AI assistant
+- [x] `.supx` packaging as primary deployment format
+- [x] Database views support (list, query, chart from views)
+- [x] Dataset management (list, inspect, edit)
+- [x] Chart management (list, inspect, edit existing charts)
+- [x] Internal task planning and self-verification for reliable task completion
+- [ ] Dashboard-level AI assistant (create dashboards, add charts to dashboards)
+- [ ] Context-aware mode across all Superset tabs (Dashboard, Explore, SQL Lab)
 - [ ] Multi-turn memory with conversation history persistence
+- [ ] Playbooks / knowledge base per database, schema, and table (e.g. [agentplaybooks.ai](https://agentplaybooks.ai))
+- [ ] Chart data retrieval tool (fetch raw data behind existing charts)
 - [ ] Support for more chart types (scatter, heatmap, geospatial)
 - [ ] Natural language filters and drill-downs
 - [ ] Dataset recommendations based on user queries
-- [ ] Playbooks / knowledge base per database, schema, and table
-- [ ] Migrate to `.supx` packaging with `superset-extensions` CLI when available
+- [ ] MCP tool registration for external AI agent integration
 - [ ] OpenAI Responses API migration for server-side state and built-in tools
 
-## Extension Format Compatibility
+## Extension Format
 
-This repo follows the [Apache Superset Extension System](https://superset.apache.org/developer-docs/extensions/overview/) conventions:
+This repo targets **Apache Superset 6.1.x+** and the `.supx` extension format:
 
 | Convention | Status |
 |------------|--------|
+| `.supx` zip packaging (primary deployment format) | **Done** |
+| `EXTENSIONS_PATH` auto-discovery | **Done** |
 | `extension.json` manifest with publisher namespace | Done |
-| Module Federation frontend (`views.registerView()` at module load) | Done |
+| Module Federation frontend (`views.registerView()`) | Done |
 | Backend entrypoint auto-loaded by Superset | Done |
-| `.supx` zip packaging (build script output) | Done |
 | `@integrityauthority/` scoped npm package | Done |
+| `LOCAL_EXTENSIONS` support (legacy/development) | Done |
 | `superset-extensions` CLI support | Pending (CLI not yet released) |
-| `EXTENSIONS_PATH` auto-discovery | Done (tested on pdapp2) |
-
-When Superset's `superset-extensions` CLI and `EXTENSIONS_PATH` become available, the migration will be minimal — the `.supx` files are already produced by the build script.
 
 ## Status
 

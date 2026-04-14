@@ -1,19 +1,23 @@
 # Vambery AI Agent
 
-An AI-powered SQL assistant for Apache Superset's SQL Lab. It lives in the
-right sidebar and helps users explore databases, write SQL queries, and create
-chart visualizations through a conversational interface.
+An AI-powered SQL assistant for Apache Superset's SQL Lab (6.1.x+). It lives in the
+right sidebar and helps users explore databases, write SQL queries, manage datasets
+and charts, and create visualizations through a conversational interface.
 
 > **Named after [Ármin Vámbéry](https://en.wikipedia.org/wiki/%C3%81rmin_V%C3%A1mb%C3%A9ry)** — the Hungarian orientalist, traveler, and polyglot who explored unknown territories. Like its namesake, Vambery navigates your data landscape so you don't have to.
 
 ## Features
 
 - **Natural language to SQL** — describe what you need, the AI writes the query
-- **Schema-aware** — inspects databases, schemas, tables, and columns before writing queries
+- **Schema-aware** — inspects databases, schemas, **tables and views** before writing queries
+- **Views support** — automatically discovers and uses database views alongside tables
 - **Rich metadata** — uses table comments, column descriptions, verbose names, and predefined Superset metrics
 - **Dialect-aware** — detects the connected database engine (MSSQL, PostgreSQL, etc.) and adapts SQL syntax
 - **SQL validation** — uses `sqlglot` for dialect-aware syntax validation before executing queries
 - **Chart creation** — creates bar, line, pie, and table charts from query results
+- **Dataset management** — list, inspect, and edit existing Superset datasets (descriptions, column metadata, SQL)
+- **Chart management** — list, inspect, and edit existing Superset charts (name, viz type, params)
+- **Internal task planning** — breaks complex requests into steps, verifies each result, never stops halfway
 - **Send to Editor** — click any SQL code block in the chat to send it to the editor
 - **Streaming** — tool call steps stream to the UI in real-time via SSE
 - **Multi-provider model selector** — combined dropdown shows models from all configured providers (e.g. `azure_openai/gpt-5.2-chat`, `ollama/qwen3.5:122b`), placed near the Send button
@@ -29,7 +33,7 @@ calling. Multiple providers are supported — configure one or more.
 |----------|------------|------------------|-------|
 | **Azure OpenAI** | `azure_openai` | Yes | Default. GPT-4o, GPT-5, etc. |
 | **OpenAI** | `openai` | Yes | Standard OpenAI. Also works for OpenRouter via `base_url`. |
-| **Ollama** | `ollama` | No | Self-hosted. Use models with tool-calling support (llama3.1, qwen2.5, mistral, etc.) |
+| **Ollama** | `ollama` | No | Self-hosted / local AI. Use models with tool-calling support (llama3.1, qwen2.5, mistral, etc.) |
 
 ### Model requirements
 
@@ -121,41 +125,71 @@ AZURE_OPENAI_API_VERSION=2025-03-01-preview
 
 ## Agent Tools
 
+The AI agent has access to 15 tools organized by category:
+
+### Schema Exploration
+
 | Tool | Description |
 |------|-------------|
 | `list_schemas` | Lists all schemas in the connected database |
-| `list_tables` | Lists tables in a schema |
-| `get_table_columns` | Returns columns with types, comments, descriptions, verbose names, and predefined metrics |
-| `sample_table_data` | Returns sample rows from a table (configurable limit) |
+| `list_tables` | Lists tables in a schema (tables only) |
+| `list_views` | Lists database views in a schema — views often contain pre-built joins and aggregations |
+| `get_table_columns` | Returns columns with types, comments, descriptions, verbose names, and predefined metrics (works on tables and views) |
+| `sample_table_data` | Returns sample rows from a table or view (configurable limit) |
 | `get_distinct_values` | Returns distinct values for a column (up to 50) |
+
+### SQL Execution
+
+| Tool | Description |
+|------|-------------|
 | `execute_sql` | Executes SELECT/WITH queries safely (max 50 rows, validated with sqlglot) |
-| `set_editor_sql` | Sets SQL in the editor and auto-executes |
+| `set_editor_sql` | Sets SQL in the user's editor and auto-executes |
+
+### Chart Management
+
+| Tool | Description |
+|------|-------------|
 | `create_chart` | Creates bar, line, pie, or table charts with preview or save |
+| `list_charts` | Lists existing Superset charts (search by name or dataset) |
+| `get_chart` | Gets full chart details: viz_type, params, datasource, explore URL |
+| `update_chart` | Edits chart name, description, viz_type, or params (requires explicit user request) |
+
+### Dataset Management
+
+| Tool | Description |
+|------|-------------|
+| `list_datasets` | Lists Superset datasets for the current database (search by name) |
+| `get_dataset` | Gets full dataset details: columns, metrics, SQL (virtual), description |
+| `update_dataset` | Edits dataset description, column metadata, or SQL (requires explicit user request) |
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────┐
-│  SQL Lab                                     │
-│  ┌──────────────────┐ ┌────────────────────┐ │
-│  │  SQL Editor       │ │  Vambery AI Agent  │ │
-│  │  Results Table    │ │  Chat Panel        │ │
-│  └──────────────────┘ └────────────────────┘ │
-└──────────────────────────────────────────────┘
-        │                        │
-        ▼                        ▼
-┌──────────────┐       ┌──────────────────┐
-│  Superset    │◄─────►│  AI Agent        │
-│  Backend     │       │  (tool calling)  │
-└──────────────┘       └───────┬──────────┘
-                               │
-                               ▼
-                       ┌──────────────────┐
-                       │  LLM Provider    │
-                       │  - Azure OpenAI  │
-                       │  - OpenAI        │
-                       │  - Ollama        │
-                       └──────────────────┘
+┌──────────────────────────────────────────────────┐
+│  SQL Lab                                         │
+│  ┌──────────────────┐  ┌──────────────────────┐  │
+│  │  SQL Editor       │  │  Vambery AI Agent    │  │
+│  │  Results Table    │  │  Chat Panel          │  │
+│  └──────────────────┘  └──────────────────────┘  │
+└──────────────────────────────────────────────────┘
+         │                         │
+         ▼                         ▼
+┌──────────────┐       ┌────────────────────────┐
+│  Superset    │◄─────►│  AI Agent              │
+│  Internal    │       │  15 tools:             │
+│  APIs        │       │  - Schema exploration  │
+│              │       │  - SQL execution       │
+│  Database    │       │  - Chart management    │
+│  SqlaTable   │       │  - Dataset management  │
+│  Slice       │       └───────────┬────────────┘
+└──────────────┘                   │
+                                   ▼
+                         ┌──────────────────┐
+                         │  LLM Provider    │
+                         │  - Azure OpenAI  │
+                         │  - OpenAI        │
+                         │  - Ollama        │
+                         └──────────────────┘
 ```
 
 **Flow:**
@@ -163,8 +197,9 @@ AZURE_OPENAI_API_VERSION=2025-03-01-preview
 2. `POST /api/v1/ai_assistant/chat/stream` sends the message (SSE)
 3. `run_agent_stream()` starts the agent loop
 4. Agent calls LLM → LLM returns tool calls → agent executes tools → repeats
-5. SSE events stream each step, action, and final response to the frontend
-6. Frontend applies actions (set SQL in editor, open chart preview)
+5. Tools use Superset's internal Python APIs directly (Database, SqlaTable, Slice models)
+6. SSE events stream each step, action, and final response to the frontend
+7. Frontend applies actions (set SQL in editor, open chart preview)
 
 ## API Endpoints
 
@@ -213,6 +248,150 @@ Example response (problems detected — HTTP 503):
   ]
 }
 ```
+
+---
+
+## Docker Deployment (Step-by-Step)
+
+This is the full walkthrough for deploying Superset with the Vambery AI Agent extension on a server using Docker Compose.
+
+### Prerequisites
+
+- Docker and Docker Compose installed
+- Apache Superset 6.1.x+ (or `integrityauthority/superset` fork)
+- LLM provider credentials (Azure OpenAI API key, or Ollama server running)
+
+### Step 1: Get the extension
+
+**Option A — .supx package (recommended):**
+
+Download the `.supx` and `requirements.txt` from [GitHub Releases](https://github.com/integrityauthority/superset-extensions/releases), or build from source:
+
+```bash
+bash extensions/build-extensions.sh
+```
+
+Place the `.supx` file in your extensions directory (e.g. `/app/extensions/`).
+
+**Option B — Git submodule (development):**
+
+```bash
+git clone --recurse-submodules https://github.com/integrityauthority/superset.git
+cd superset
+```
+
+If you already have the repo but the `extensions/` folder is empty:
+
+```bash
+git submodule update --init --remote extensions
+```
+
+### Step 2: Configure environment variables
+
+Create or edit `docker/.env-local`:
+
+```bash
+# === AI Assistant Configuration ===
+
+# Provider: azure_openai | openai | ollama
+AI_PROVIDER=azure_openai
+
+# --- Azure OpenAI ---
+AZURE_OPENAI_API_KEY=your-api-key-here
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT=gpt-4o
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
+
+# --- OR: Ollama (self-hosted, no API key) ---
+# AI_PROVIDER=ollama
+# OLLAMA_BASE_URL=http://your-ollama-host:11434
+# OLLAMA_MODEL=qwen3.5:122b
+
+# --- OR: OpenAI ---
+# AI_PROVIDER=openai
+# OPENAI_API_KEY=sk-...
+# OPENAI_MODEL=gpt-4o
+```
+
+### Step 3: Install Python dependencies
+
+The build script auto-generates a `*-requirements.txt` file next to
+the `.supx` — copy its contents into `docker/requirements-local.txt`:
+
+```bash
+# If you built locally, the file is already in extensions/:
+cat extensions/integrityauthority.vambery-ai-assistant-*-requirements.txt \
+    >> docker/requirements-local.txt
+
+# Or just add manually:
+echo "openai>=1.0.0" >> docker/requirements-local.txt
+```
+
+This file is automatically installed by Superset's `docker-bootstrap.sh` during
+container startup — before extensions are loaded.
+
+> **Why not auto-install?** The `.supx` format runs backend code in-memory and
+> does not support automatic dependency installation. The extension attempts a
+> runtime `pip install` fallback, but it may fail if the container has no internet
+> or write access. Pre-installing via `requirements-local.txt` is reliable.
+
+> **Tip:** If you're using MSSQL databases, also add `pyodbc>=5.2.0` to the same file.
+
+### Step 4: Configure superset_config.py
+
+```python
+FEATURE_FLAGS = {
+    "ENABLE_EXTENSIONS": True,
+}
+
+# For .supx files:
+EXTENSIONS_PATH = "/app/extensions"
+
+# OR for LOCAL_EXTENSIONS (development):
+# LOCAL_EXTENSIONS = ["/app/extensions/ai_assistant"]
+```
+
+### Step 5: Verify docker-compose build args
+
+Your `docker-compose-non-dev.yml` must include `DEV_MODE: "false"` for extensions to work:
+
+```yaml
+x-common-build: &common-build
+  context: .
+  target: dev
+  args:
+    DEV_MODE: "false"          # REQUIRED for Module Federation / extensions
+    INSTALL_MSSQL_ODBC: "true" # If using MSSQL databases
+```
+
+**Without `DEV_MODE: "false"`, extensions will NOT load** — the frontend build is skipped entirely, so the Module Federation remote entry is never generated.
+
+### Step 6: Build and start
+
+```bash
+docker compose -f docker-compose-non-dev.yml up -d --build
+```
+
+### Step 7: Verify
+
+1. Check containers are running:
+   ```bash
+   docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+   ```
+
+2. Check extension loaded (look for "Vambery AI Agent extension registered"):
+   ```bash
+   docker logs superset_app --tail 50 2>&1 | grep -i "vambery\|extension"
+   ```
+
+3. Open SQL Lab in the browser, expand the right sidebar — the **Vambery AI Agent** panel should be visible.
+
+4. Health check:
+   ```bash
+   curl http://localhost:8088/api/v1/ai_assistant/health
+   ```
+
+---
 
 ## Python Dependencies
 
@@ -263,7 +442,7 @@ ai_assistant/
 │       ├── agent.py               # Agent loop, system prompt, tool orchestration
 │       ├── config.py              # Configuration loading (superset_config.py + env vars)
 │       ├── llm.py                 # LLM provider abstraction (Azure, OpenAI, Ollama)
-│       └── tools.py               # Tool definitions & execution
+│       └── tools.py               # Tool definitions & execution (15 tools)
 ├── frontend/
 │   ├── package.json               # npm dependencies (scoped @integrityauthority/)
 │   ├── webpack.config.js          # Module Federation config
@@ -323,14 +502,6 @@ cp backend/src/ai_assistant/*.py dist/backend/src/ai_assistant/
 # Update manifest with new remoteEntry hash
 # (or just re-run: bash build-extensions.sh)
 ```
-
-## Extension Format
-
-This extension follows the [Apache Superset Extension System](https://superset.apache.org/developer-docs/extensions/overview/) conventions and is forward-compatible with the upcoming `.supx` packaging standard:
-
-- **Frontend**: Uses `views.registerView()` at module load time (no activate/deactivate lifecycle)
-- **Backend**: Flask Blueprint registered via entrypoint (will migrate to `@api` decorator when `superset_core` is available)
-- **Packaging**: `build-extensions.sh` produces both a `dist/` folder (LOCAL_EXTENSIONS) and a `.supx` zip (EXTENSIONS_PATH)
 
 ## Database Support
 
