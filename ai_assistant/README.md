@@ -224,7 +224,7 @@ Example response (all ok):
 ```json
 {
   "status": "ok",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "provider": "azure_openai",
   "dependency_openai": true,
   "config_ok": true,
@@ -237,7 +237,7 @@ Example response (problems detected — HTTP 503):
 ```json
 {
   "status": "degraded",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "provider": "ollama",
   "dependency_openai": false,
   "config_ok": true,
