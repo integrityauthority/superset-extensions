@@ -3,7 +3,7 @@
   "name": "vambery-ai-assistant",
   "displayName": "Vambery AI Agent",
   "id": "integrityauthority.vambery-ai-assistant",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "Apache-2.0",
   "frontend": {
     "remoteEntry": "remoteEntry.28ac85d5a7289b271cd0.js",
