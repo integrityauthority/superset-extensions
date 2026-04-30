@@ -36,6 +36,9 @@ Example superset_config.py entry:
             "base_url": "http://localhost:11434",
             "model": "llama3.1",
         },
+        # Replace the entire built-in system prompt (use with caution):
+        # "system_prompt_override": "You are a custom SQL assistant...",
+        # Append extra instructions after the system prompt:
         "system_prompt_extra": "",
         "max_tool_rounds": 10,
         "max_sample_rows": 20,
@@ -56,6 +59,7 @@ logger = logging.getLogger(__name__)
 # These are used as fallback when AI_ASSISTANT is not set in superset_config.py.
 ENV_MAPPING: dict[str, str] = {
     "provider": "AI_PROVIDER",
+    "system_prompt_override": "AI_SYSTEM_PROMPT_OVERRIDE",
     "system_prompt_extra": "AI_SYSTEM_PROMPT_EXTRA",
     "max_tool_rounds": "AI_MAX_TOOL_ROUNDS",
     "max_sample_rows": "AI_MAX_SAMPLE_ROWS",
@@ -86,6 +90,7 @@ DEFAULTS: dict[str, Any] = {
         "base_url": "http://localhost:11434",
         "model": "llama3.1",
     },
+    "system_prompt_override": "",
     "system_prompt_extra": "",
     "max_tool_rounds": 50,
     "max_sample_rows": 20,

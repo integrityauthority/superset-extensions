@@ -15,11 +15,15 @@ An AI-powered data assistant that lives inside SQL Lab. Ask questions in natural
 - Explores both **tables and views** automatically
 - Interactive chart creation (bar, line, pie, table)
 - **Dataset and chart management** — browse, inspect, and edit existing Superset objects
+- **Clarification questions** — the AI asks clickable option buttons when the request is ambiguous
+- **Live task progress** — visible todo checklist shows real-time progress on multi-step tasks
+- **SQL validation** — queries are validated against the database before being placed in the editor
 - Send to Editor buttons on all SQL code blocks
 - Streaming responses with real-time tool-use visibility
 - Multiple LLM providers: Azure OpenAI, OpenAI, Ollama (local/self-hosted)
 - Ollama model auto-discovery with per-question model selector
-- 15 agent tools for comprehensive data exploration and management
+- Custom system prompt override via config or environment variable
+- 17 agent tools for comprehensive data exploration and management
 
 See the **[full documentation](ai_assistant/README.md)** for configuration, architecture, and API reference.
 
@@ -60,38 +64,6 @@ EXTENSIONS_PATH = "/app/extensions"
 
 > See the **[full Docker deployment guide](ai_assistant/README.md#docker-deployment-step-by-step)** for the complete walkthrough.
 
-### Method 2: Git Submodule + LOCAL_EXTENSIONS (development)
-
-> **Note:** `LOCAL_EXTENSIONS` is supported for development workflows and git-based deployments. For production, we recommend `.supx` (Method 1).
-
-```bash
-# Inside your Superset repo
-git submodule add https://github.com/integrityauthority/superset-extensions.git extensions
-git submodule update --init
-```
-
-Or when cloning a fork that already has this submodule:
-
-```bash
-git clone --recurse-submodules https://github.com/integrityauthority/superset.git
-```
-
-**Build the extension:**
-
-```bash
-bash extensions/build-extensions.sh
-```
-
-**Configure Superset** — add to `superset_config.py`:
-
-```python
-FEATURE_FLAGS = {
-    "ENABLE_EXTENSIONS": True,
-}
-
-LOCAL_EXTENSIONS = ["/app/extensions/ai_assistant"]
-```
-
 ---
 
 ## Troubleshooting
@@ -116,23 +88,6 @@ LOCAL_EXTENSIONS = ["/app/extensions/ai_assistant"]
 | "model does not support tools" | Wrong model | Use a model with function calling support (GPT-4o+, llama3.1+, qwen2.5+) |
 | Health shows `dependency_openai: false` | Auto-install failed | Add `openai>=1.0.0` to `docker/requirements-local.txt` and restart |
 
-### Submodule issues (LOCAL_EXTENSIONS method only)
-
-```bash
-# Submodule folder exists but is empty
-git submodule update --init --remote extensions
-
-# Submodule is stuck on old version
-cd extensions && git pull origin main && cd ..
-git add extensions && git commit -m "chore: update extensions submodule"
-
-# Remove and re-add submodule
-git submodule deinit -f extensions
-git rm -f extensions
-rm -rf .git/modules/extensions
-git submodule add https://github.com/integrityauthority/superset-extensions.git extensions
-```
-
 ---
 
 ## Contributing
@@ -150,6 +105,10 @@ We welcome contributions! Here's how:
 - [x] Dataset management (list, inspect, edit)
 - [x] Chart management (list, inspect, edit existing charts)
 - [x] Internal task planning and self-verification for reliable task completion
+- [x] Interactive clarification questions (`ask_user`) with clickable option buttons
+- [x] Live task progress checklist (`update_todo`) for multi-step operations
+- [x] SQL validation — queries verified against the database before editor placement
+- [x] Custom system prompt override (`system_prompt_override` / `AI_SYSTEM_PROMPT_OVERRIDE`)
 - [ ] Dashboard-level AI assistant (create dashboards, add charts to dashboards)
 - [ ] Context-aware mode across all Superset tabs (Dashboard, Explore, SQL Lab)
 - [ ] Multi-turn memory with conversation history persistence
@@ -173,7 +132,6 @@ This repo targets **Apache Superset 6.1.x+** and the `.supx` extension format:
 | Module Federation frontend (`views.registerView()`) | Done |
 | Backend entrypoint auto-loaded by Superset | Done |
 | `@integrityauthority/` scoped npm package | Done |
-| `LOCAL_EXTENSIONS` support (legacy/development) | Done |
 | `superset-extensions` CLI support | Pending (CLI not yet released) |
 
 ## Status

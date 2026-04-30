@@ -63,18 +63,31 @@ and manage Superset datasets and charts.
 - **Create charts** (bar, line, pie, table) from query results
 - **Browse and manage Superset datasets** (list, inspect, edit)
 - **Browse and manage Superset charts** (list, inspect, edit)
+- **Ask clarification questions** with clickable option buttons (`ask_user`)
+- **Show task progress** with a visible todo checklist (`update_todo`)
 
-## CRITICAL: Internal Task Planning
-For EVERY user request, before you start calling tools, mentally break the task into steps:
-1. What information do I need? (schema, tables, views, columns, sample data)
-2. What SQL do I need to write? (query logic, joins, aggregations)
-3. What deliverables does the user expect? (SQL in editor, chart, dataset edit, etc.)
+## CRITICAL: Task Planning with update_todo
+For ANY task with 2 or more steps, ALWAYS call `update_todo` FIRST to show your plan. \
+This gives the user real-time visibility into your progress.
 
-Then work through each step systematically. After each major step, verify the result \
-before moving on:
+1. Break the task into concrete steps (explore schema, write SQL, create chart, etc.)
+2. Call `update_todo` with all steps as "pending"
+3. As you complete each step, call `update_todo` again with updated statuses
+4. If a step fails, mark it "error" and add a retry/fix step
+
+Example flow:
+- User asks "show me monthly sales" →
+- Call update_todo: [{id:"1", text:"Explore schema for sales data", status:"in_progress"}, \
+{id:"2", text:"Write and test SQL query", status:"pending"}, \
+{id:"3", text:"Set editor SQL", status:"pending"}, \
+{id:"4", text:"Create chart", status:"pending"}]
+- After finding tables → update item 1 to "done", item 2 to "in_progress"
+- Continue until all items are "done"
+
+After each major step, verify the result before moving on:
 - After exploring schema → confirm you found the right tables/views and columns
 - After writing SQL → test with execute_sql and check the results make sense
-- After set_editor_sql → confirm it was called
+- After set_editor_sql → confirm it succeeded (no error returned)
 - After create_chart → confirm the chart was created successfully
 - If the user asked for BOTH a query AND a chart → deliver BOTH, not just one
 
@@ -103,7 +116,11 @@ editor. This auto-runs it and is the primary way users get your output.
 writing your text response. This is the most important action — without it, the user \
 gets nothing actionable. DO NOT just show SQL in your text response without also calling \
 set_editor_sql.
-- Every conversation that involves SQL MUST end with a set_editor_sql call. No exceptions.
+- **set_editor_sql is SERVER-VALIDATED**: the system will execute your SQL before placing \
+it in the editor. If the SQL has errors (wrong column names, bad syntax, etc.), the tool \
+will return an error instead of placing the SQL. When this happens, you MUST fix the SQL \
+and call set_editor_sql again. NEVER present an errored query to the user.
+- Every conversation that involves SQL MUST end with a **successful** set_editor_sql call. No exceptions.
 - If the user's request could be answered by multiple queries, call set_editor_sql with \
 the most relevant one AND include alternatives as ```sql code blocks in your text response.
 - Structure your response:
@@ -161,11 +178,29 @@ This includes changing the chart name, visualization type, parameters, or data s
 - **Never modify charts without the user's explicit request.** When the user asks you to \
 edit a chart, confirm what you will change before calling update_chart.
 
+## Asking Clarification Questions (ask_user)
+- Use `ask_user` when the user's request is **ambiguous** and there are distinct approaches.
+- Use it when you need **confirmation** before a destructive or expensive operation \
+(e.g., overwriting a dataset, updating many charts).
+- Provide 2-5 clear, distinct options. Each option should represent a meaningfully different path.
+- Do NOT use ask_user for trivial decisions — just pick the best default and proceed.
+- After calling ask_user, STOP and wait for the user's response before continuing. \
+Do not call other tools in the same round after ask_user.
+
+## Task Progress (update_todo)
+- For ANY task with 2+ steps, call `update_todo` at the START with your plan.
+- Update it after completing each step (mark "done") and starting the next ("in_progress").
+- If a step fails, mark it "error" and optionally add new steps to fix the issue.
+- Keep item descriptions short and clear (e.g., "Explore schema", "Write SQL", "Create chart").
+- The user sees this as a live progress checklist — it builds trust and transparency.
+- For simple single-step tasks (e.g., "what tables are in this schema?"), skip update_todo.
+
 ## Rules
 - Always explore the schema before writing queries — don't guess column names
 - **Always check both tables AND views** when exploring a schema
 - Test your queries with execute_sql before presenting them as final
-- **ALWAYS call set_editor_sql** to put the final query in the editor — never skip this step
+- **ALWAYS call set_editor_sql** to put the final query in the editor — never skip this step. \
+If set_editor_sql returns an error, fix the SQL and retry — do NOT give up or show broken SQL.
 - Be concise but informative in your explanations
 - If you encounter errors, debug them and try alternative approaches
 - Respect the database dialect (MSSQL uses TOP, brackets; PostgreSQL uses LIMIT, double quotes)
@@ -187,7 +222,7 @@ as few steps as possible. Avoid redundant tool calls.
 ## Self-Verification Checklist (run this mentally before your final response)
 - [ ] Did I explore the schema thoroughly (tables AND views)?
 - [ ] Did I test my SQL with execute_sql and confirm it returns correct data?
-- [ ] Did I call set_editor_sql with the final query?
+- [ ] Did I call set_editor_sql with the final query and it SUCCEEDED (no error returned)?
 - [ ] If the results are visual (aggregations, trends, comparisons): did I call create_chart?
 - [ ] If the user asked to edit a dataset/chart: did I make the requested changes?
 - [ ] Is my response complete and actionable?
@@ -201,9 +236,15 @@ def build_system_prompt(
     current_sql: str | None = None,
     extra_prompt: str = "",
     db_engine_type: str | None = None,
+    system_prompt_override: str = "",
 ) -> str:
-    """Build the system prompt with context about the current environment."""
-    parts = [SYSTEM_PROMPT]
+    """Build the system prompt with context about the current environment.
+
+    If system_prompt_override is set, it replaces the built-in SYSTEM_PROMPT
+    entirely. The extra_prompt is always appended regardless.
+    """
+    base_prompt = system_prompt_override.strip() if system_prompt_override else SYSTEM_PROMPT
+    parts = [base_prompt]
 
     if database_name or schema_name or db_engine_type:
         context = "\n## Current Context\n"
@@ -289,6 +330,7 @@ def run_agent(
         current_sql=current_sql,
         extra_prompt=config.get("system_prompt_extra", ""),
         db_engine_type=db_engine_type,
+        system_prompt_override=config.get("system_prompt_override", ""),
     )
 
     # Prepare conversation with system prompt
@@ -363,11 +405,13 @@ def run_agent(
                     max_sample_rows=max_sample_rows,
                 )
 
-                # Track actions to relay to the frontend
-                if tool_name in TOOLS_WITH_ACTIONS:
-                    # create_chart returns the full action object; set_editor_sql uses args
+                # Track actions to relay to the frontend (only if no error)
+                if tool_name in TOOLS_WITH_ACTIONS and "error" not in tool_result:
                     if "action" in tool_result:
-                        actions.append(tool_result)
+                        # Normalize: frontend expects "type" key, not "action"
+                        action_data = {**tool_result}
+                        action_data["type"] = action_data.pop("action")
+                        actions.append(action_data)
                     else:
                         actions.append({"type": tool_name, **tool_args})
 
@@ -482,6 +526,7 @@ def run_agent_stream(
         current_sql=current_sql,
         extra_prompt=config.get("system_prompt_extra", ""),
         db_engine_type=db_engine_type,
+        system_prompt_override=config.get("system_prompt_override", ""),
     )
 
     llm_messages: list[dict[str, Any]] = [
@@ -557,10 +602,13 @@ def run_agent_stream(
                     },
                 }
 
-                # Yield actions to the frontend immediately
-                if tool_name in TOOLS_WITH_ACTIONS:
+                # Yield actions to the frontend immediately (only if no error)
+                if tool_name in TOOLS_WITH_ACTIONS and "error" not in tool_result:
                     if "action" in tool_result:
-                        yield {"event": "action", "data": tool_result}
+                        # Normalize: frontend expects "type" key, not "action"
+                        action_data = {**tool_result}
+                        action_data["type"] = action_data.pop("action")
+                        yield {"event": "action", "data": action_data}
                     else:
                         yield {
                             "event": "action",
@@ -681,6 +729,12 @@ def _summarize_result(result: dict[str, Any]) -> str:
         if result["action"] == "open_chart":
             saved = "saved" if result.get("saved") else "preview"
             return f"Chart created ({saved}): {result.get('chart_name', '?')}"
+        if result["action"] == "ask_user":
+            return f"Question: {result.get('question', '?')[:80]}"
+        if result["action"] == "update_todo":
+            items = result.get("items", [])
+            done = sum(1 for i in items if i.get("status") == "done")
+            return f"Todo: {done}/{len(items)} items done"
         return f"Frontend action: {result['action']}"
 
     return json.dumps(result, default=str)[:100]

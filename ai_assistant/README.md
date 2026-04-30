@@ -17,6 +17,10 @@ and charts, and create visualizations through a conversational interface.
 - **Chart creation** — creates bar, line, pie, and table charts from query results
 - **Dataset management** — list, inspect, and edit existing Superset datasets (descriptions, column metadata, SQL)
 - **Chart management** — list, inspect, and edit existing Superset charts (name, viz type, params)
+- **Clarification questions** — asks clickable option buttons when the request is ambiguous (`ask_user`)
+- **Live task progress** — shows a visible todo checklist during multi-step tasks (`update_todo`)
+- **SQL validation** — queries are validated against the database before being placed in the editor
+- **Custom system prompt** — override the built-in system prompt entirely via config or env var
 - **Internal task planning** — breaks complex requests into steps, verifies each result, never stops halfway
 - **Send to Editor** — click any SQL code block in the chat to send it to the editor
 - **Streaming** — tool call steps stream to the UI in real-time via SSE
@@ -60,7 +64,9 @@ or `ollama/qwen3.5:122b`) without restarting Superset.
 ```python
 AI_ASSISTANT = {
     "provider": "azure_openai",  # or "openai" or "ollama"
-    "system_prompt_extra": "",   # additional instructions for the AI
+    # Replace the entire built-in system prompt (use with caution):
+    # "system_prompt_override": "You are a custom SQL assistant for ...",
+    "system_prompt_extra": "",   # additional instructions appended to the system prompt
     "max_tool_rounds": 50,       # max tool-use rounds per conversation turn
     "max_sample_rows": 20,       # max rows for sample queries
 
@@ -119,13 +125,14 @@ AZURE_OPENAI_API_VERSION=2025-03-01-preview
 | `AZURE_OPENAI_API_VERSION` | `azure_openai.api_version` | `2025-03-01-preview` |
 | `OLLAMA_BASE_URL` | `ollama.base_url` | — |
 | `OLLAMA_MODEL` | `ollama.model` | — |
+| `AI_SYSTEM_PROMPT_OVERRIDE` | `system_prompt_override` | `""` (uses built-in prompt) |
 | `AI_SYSTEM_PROMPT_EXTRA` | `system_prompt_extra` | `""` |
 | `AI_MAX_TOOL_ROUNDS` | `max_tool_rounds` | `50` |
 | `AI_MAX_SAMPLE_ROWS` | `max_sample_rows` | `20` |
 
 ## Agent Tools
 
-The AI agent has access to 15 tools organized by category:
+The AI agent has access to 17 tools organized by category:
 
 ### Schema Exploration
 
@@ -143,7 +150,7 @@ The AI agent has access to 15 tools organized by category:
 | Tool | Description |
 |------|-------------|
 | `execute_sql` | Executes SELECT/WITH queries safely (max 50 rows, validated with sqlglot) |
-| `set_editor_sql` | Sets SQL in the user's editor and auto-executes |
+| `set_editor_sql` | Validates SQL against the database, then sets it in the user's editor. Returns errors for bad queries so the AI can fix and retry. |
 
 ### Chart Management
 
@@ -153,6 +160,13 @@ The AI agent has access to 15 tools organized by category:
 | `list_charts` | Lists existing Superset charts (search by name or dataset) |
 | `get_chart` | Gets full chart details: viz_type, params, datasource, explore URL |
 | `update_chart` | Edits chart name, description, viz_type, or params (requires explicit user request) |
+
+### Interactive
+
+| Tool | Description |
+|------|-------------|
+| `ask_user` | Asks the user a clarification question with clickable option buttons. The user's choice is sent back as their next message. |
+| `update_todo` | Creates or updates a visible task checklist shown to the user as a real-time progress indicator. |
 
 ### Dataset Management
 
@@ -176,11 +190,12 @@ The AI agent has access to 15 tools organized by category:
          ▼                         ▼
 ┌──────────────┐       ┌────────────────────────┐
 │  Superset    │◄─────►│  AI Agent              │
-│  Internal    │       │  15 tools:             │
+│  Internal    │       │  17 tools:             │
 │  APIs        │       │  - Schema exploration  │
 │              │       │  - SQL execution       │
 │  Database    │       │  - Chart management    │
 │  SqlaTable   │       │  - Dataset management  │
+│              │       │  - Interactive (UX)    │
 │  Slice       │       └───────────┬────────────┘
 └──────────────┘                   │
                                    ▼
@@ -224,7 +239,7 @@ Example response (all ok):
 ```json
 {
   "status": "ok",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "provider": "azure_openai",
   "dependency_openai": true,
   "config_ok": true,
@@ -237,7 +252,7 @@ Example response (problems detected — HTTP 503):
 ```json
 {
   "status": "degraded",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "provider": "ollama",
   "dependency_openai": false,
   "config_ok": true,
@@ -272,19 +287,6 @@ bash extensions/build-extensions.sh
 ```
 
 Place the `.supx` file in your extensions directory (e.g. `/app/extensions/`).
-
-**Option B — Git submodule (development):**
-
-```bash
-git clone --recurse-submodules https://github.com/integrityauthority/superset.git
-cd superset
-```
-
-If you already have the repo but the `extensions/` folder is empty:
-
-```bash
-git submodule update --init --remote extensions
-```
 
 ### Step 2: Configure environment variables
 
@@ -344,11 +346,7 @@ FEATURE_FLAGS = {
     "ENABLE_EXTENSIONS": True,
 }
 
-# For .supx files:
 EXTENSIONS_PATH = "/app/extensions"
-
-# OR for LOCAL_EXTENSIONS (development):
-# LOCAL_EXTENSIONS = ["/app/extensions/ai_assistant"]
 ```
 
 ### Step 5: Verify docker-compose build args
@@ -475,8 +473,7 @@ bash build-extensions.sh
 ```
 
 Output:
-- `ai_assistant/dist/` — the full extension bundle (used by `LOCAL_EXTENSIONS`)
-- `integrityauthority.vambery-ai-assistant-<version>.supx` — portable package (used by `EXTENSIONS_PATH`)
+- `integrityauthority.vambery-ai-assistant-<version>.supx` — the extension package
 - `integrityauthority.vambery-ai-assistant-<version>-requirements.txt` — Python deps to copy into `docker/requirements-local.txt`
 
 ### Frontend dev server (hot reload)
@@ -485,22 +482,6 @@ Output:
 cd extensions/ai_assistant/frontend
 npm run start
 # Runs webpack-dev-server on http://localhost:3000
-```
-
-### Manually updating dist after code changes
-
-If you edit files without running the full build script:
-
-```bash
-# Frontend changes
-cd extensions/ai_assistant/frontend && npm run build
-cp -r frontend/dist/* ../dist/frontend/dist/
-
-# Backend changes
-cp backend/src/ai_assistant/*.py dist/backend/src/ai_assistant/
-
-# Update manifest with new remoteEntry hash
-# (or just re-run: bash build-extensions.sh)
 ```
 
 ## Database Support
