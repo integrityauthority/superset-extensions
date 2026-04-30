@@ -59,11 +59,21 @@ interface EditorAction {
   type: string;
   sql?: string;
   // Chart creation action fields
-  action?: string;
   url?: string;
   chart_name?: string;
   viz_type?: string;
   saved?: boolean;
+  // ask_user action fields
+  question?: string;
+  options?: { id: string; label: string }[];
+  // update_todo action fields
+  items?: TodoItem[];
+}
+
+interface TodoItem {
+  id: string;
+  text: string;
+  status: "pending" | "in_progress" | "done" | "error";
 }
 
 interface ChatContext {
@@ -511,6 +521,83 @@ function getStyles(t: themeApi.SupersetTheme) {
       cursor: "pointer",
       fontSize: t.fontSizeSM - 1,
     }),
+    // ask_user question card
+    askUserCard: {
+      marginBottom: t.marginSM,
+      padding: `${t.paddingSM}px`,
+      borderRadius: t.borderRadius,
+      backgroundColor: t.colorBgContainer,
+      border: `1px solid ${t.colorPrimary}`,
+    },
+    askUserQuestion: {
+      fontWeight: t.fontWeightStrong,
+      marginBottom: t.marginXS,
+      color: t.colorText,
+    },
+    askUserOptions: {
+      display: "flex",
+      flexWrap: "wrap" as const,
+      gap: t.sizeXS,
+    },
+    askUserOptionButton: (disabled: boolean) => ({
+      padding: `${t.paddingXS - 1}px ${t.paddingSM}px`,
+      backgroundColor: disabled ? t.colorFillSecondary : t.colorPrimary,
+      color: disabled ? t.colorTextTertiary : "#fff",
+      border: "none",
+      borderRadius: t.borderRadiusSM,
+      cursor: disabled ? "not-allowed" : "pointer",
+      fontSize: t.fontSizeSM,
+      fontWeight: t.fontWeightStrong,
+    }),
+    // update_todo checklist
+    todoContainer: {
+      marginBottom: t.marginSM,
+      padding: `${t.paddingXS + 2}px ${t.paddingSM}px`,
+      borderRadius: t.borderRadius,
+      backgroundColor: t.colorBgContainer,
+      border: `1px solid ${t.colorBorderSecondary}`,
+      fontSize: t.fontSizeSM,
+    },
+    todoTitle: {
+      fontWeight: t.fontWeightStrong,
+      marginBottom: t.marginXS,
+      color: t.colorText,
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+    },
+    todoItem: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "2px 0",
+    },
+    todoIcon: (status: string) => ({
+      flexShrink: 0,
+      fontSize: t.fontSizeSM,
+      color:
+        status === "done"
+          ? t.colorSuccess
+          : status === "error"
+          ? t.colorError
+          : status === "in_progress"
+          ? t.colorPrimary
+          : t.colorTextQuaternary,
+    }),
+    todoText: (status: string) => ({
+      color: status === "done" ? t.colorTextTertiary : t.colorText,
+      textDecoration: status === "done" ? "line-through" : "none",
+    }),
+    todoSpinner: {
+      display: "inline-block",
+      width: 10,
+      height: 10,
+      border: `2px solid ${t.colorTextQuaternary}`,
+      borderTopColor: t.colorPrimary,
+      borderRadius: "50%",
+      animation: "vambery-spin 0.8s linear infinite",
+      flexShrink: 0,
+    },
   };
 }
 
@@ -660,6 +747,10 @@ const ChatPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   // Steps that arrive progressively while the agent is working
   const [streamingSteps, setStreamingSteps] = useState<AgentStep[]>([]);
+  // Todo items from the AI's update_todo tool (persists across turns)
+  const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
+  // Pending ask_user question (shown as interactive card)
+  const [pendingQuestion, setPendingQuestion] = useState<EditorAction | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -676,7 +767,7 @@ const ChatPanel: React.FC = () => {
   // Auto-scroll to bottom when new messages or streaming steps arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading, streamingSteps]);
+  }, [messages, loading, streamingSteps, todoItems, pendingQuestion]);
 
   // Inject CSS keyframe animations (once)
   useEffect(() => {
@@ -778,9 +869,23 @@ const ChatPanel: React.FC = () => {
     }
 
     // Chart creation action — open explore URL in a new tab
-    if (action.action === "open_chart" && action.url) {
+    if (action.type === "open_chart" && action.url) {
       console.log("[Vambery AI] Opening chart:", action.chart_name, action.url);
       window.open(action.url, "_blank");
+      return true;
+    }
+
+    // ask_user — store the question for rendering as an interactive card
+    if (action.type === "ask_user" && action.question && action.options) {
+      console.log("[Vambery AI] Ask user:", action.question);
+      setPendingQuestion(action);
+      return true;
+    }
+
+    // update_todo — merge items into the todo list state
+    if (action.type === "update_todo" && action.items) {
+      console.log("[Vambery AI] Update todo:", action.items.length, "items");
+      setTodoItems(action.items);
       return true;
     }
 
@@ -913,7 +1018,96 @@ const ChatPanel: React.FC = () => {
     setMessages([]);
     setInput("");
     setEditingIdx(null);
+    setTodoItems([]);
+    setPendingQuestion(null);
   }, []);
+
+  // Handle user clicking an option from ask_user
+  const handleOptionSelect = useCallback(async (optionLabel: string) => {
+    if (loading) return;
+    setPendingQuestion(null);
+
+    const userMessage: ChatMessage = {
+      role: "user",
+      content: optionLabel,
+      timestamp: Date.now(),
+    };
+    setMessages((prev) => [...prev, userMessage]);
+    setLoading(true);
+    setStreamingSteps([]);
+
+    try {
+      const context = await getContext();
+      if (!context.database_id) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: "Please select a database in the left sidebar first.",
+            timestamp: Date.now(),
+            error: true,
+          },
+        ]);
+        setLoading(false);
+        return;
+      }
+
+      const apiMessages = [
+        ...messages.map((m) => ({ role: m.role, content: m.content })),
+        { role: "user", content: optionLabel },
+      ];
+
+      const collectedSteps: AgentStep[] = [];
+      const collectedActions: EditorAction[] = [];
+      let finalResponse = "";
+      let hasError = false;
+      let hasRunnable = false;
+
+      await postChatStream(apiMessages, context, async (evt) => {
+        if (evt.event === "step") {
+          const step = evt.data as unknown as AgentStep;
+          collectedSteps.push(step);
+          setStreamingSteps([...collectedSteps]);
+        } else if (evt.event === "action") {
+          const action = evt.data as unknown as EditorAction;
+          collectedActions.push(action);
+          const ran = await applyAction(action);
+          if (ran) hasRunnable = true;
+        } else if (evt.event === "response") {
+          finalResponse =
+            (evt.data.response as string) || "I couldn't generate a response.";
+        } else if (evt.event === "error") {
+          finalResponse = `Error: ${evt.data.error || "Something went wrong"}`;
+          hasError = true;
+        }
+      });
+
+      const assistantMessage: ChatMessage = {
+        role: "assistant",
+        content: finalResponse || "I couldn't generate a response.",
+        timestamp: Date.now(),
+        steps: collectedSteps,
+        actions: collectedActions,
+        error: hasError,
+        hasRunnable: hasRunnable,
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+    } catch (error) {
+      console.error("[Vambery AI] Option select error:", error);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `Error: ${(error as Error).message || "Something went wrong"}`,
+          timestamp: Date.now(),
+          error: true,
+        },
+      ]);
+    } finally {
+      setLoading(false);
+      setStreamingSteps([]);
+    }
+  }, [loading, messages, getContext, applyAction]);
 
   // Start editing a previous user message
   const handleStartEdit = useCallback((idx: number) => {
@@ -1168,7 +1362,7 @@ const ChatPanel: React.FC = () => {
                 )}
                 {msg.actions &&
                   msg.actions
-                    .filter((a) => a.action === "open_chart" && a.url)
+                    .filter((a) => a.type === "open_chart" && a.url)
                     .map((chartAction, aIdx) => (
                       <button
                         key={`chart-${aIdx}`}
@@ -1183,6 +1377,47 @@ const ChatPanel: React.FC = () => {
             )}
           </div>
         ))}
+
+        {/* Todo list — visible whenever there are items */}
+        {todoItems.length > 0 && (
+          <div style={styles.todoContainer}>
+            <div style={styles.todoTitle}>
+              <span>Task Progress</span>
+            </div>
+            {todoItems.map((item) => (
+              <div key={item.id} style={styles.todoItem}>
+                <span style={styles.todoIcon(item.status)}>
+                  {item.status === "done" && "\u2713"}
+                  {item.status === "error" && "\u2717"}
+                  {item.status === "pending" && "\u25CB"}
+                  {item.status === "in_progress" && (
+                    <span style={styles.todoSpinner} />
+                  )}
+                </span>
+                <span style={styles.todoText(item.status)}>{item.text}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ask_user question card — shown when AI asks a question */}
+        {pendingQuestion && !loading && (
+          <div style={styles.askUserCard}>
+            <div style={styles.askUserQuestion}>{pendingQuestion.question}</div>
+            <div style={styles.askUserOptions}>
+              {pendingQuestion.options?.map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  style={styles.askUserOptionButton(false)}
+                  onClick={() => handleOptionSelect(opt.label)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Live streaming steps + loading indicator */}
         {loading && (

@@ -294,8 +294,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "name": "set_editor_sql",
             "description": (
                 "Set the SQL query in the user's SQL editor. "
-                "Use this when you have the final, tested query ready for the user. "
-                "This replaces the content of the active SQL editor tab."
+                "The SQL is validated by executing it against the database first. "
+                "If the SQL has errors (wrong column names, syntax errors, etc.), "
+                "this tool returns an error and the query is NOT placed in the editor. "
+                "In that case, fix the SQL and call this tool again. "
+                "Use this when you have the final query ready for the user."
             ),
             "parameters": {
                 "type": "object",
@@ -578,6 +581,94 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    # ------------------------------------------------------------------
+    # Interactive tools (frontend-only actions)
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_user",
+            "description": (
+                "Ask the user a clarification question with predefined options. "
+                "Use this when the request is ambiguous, there are multiple valid "
+                "approaches, or you need confirmation before a significant action. "
+                "The user will see clickable option buttons and their choice will "
+                "be sent back to you as their next message."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question to ask the user.",
+                    },
+                    "options": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Short identifier for this option.",
+                                },
+                                "label": {
+                                    "type": "string",
+                                    "description": "Human-readable label shown on the button.",
+                                },
+                            },
+                            "required": ["id", "label"],
+                        },
+                        "description": "The options to present to the user (2-5 options).",
+                    },
+                },
+                "required": ["question", "options"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_todo",
+            "description": (
+                "Create or update a visible task checklist for the user. "
+                "Use this at the start of any multi-step task to show your plan, "
+                "and update it as you complete each step. The user sees this as a "
+                "real-time progress indicator. Each item has an id, text, and status."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Unique identifier for this todo item.",
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "description": "Description of the task step.",
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "done", "error"],
+                                    "description": "Current status of this step.",
+                                },
+                            },
+                            "required": ["id", "text", "status"],
+                        },
+                        "description": (
+                            "The full todo list. Send ALL items each time (not just changed ones). "
+                            "Update statuses as you progress through steps."
+                        ),
+                    },
+                },
+                "required": ["items"],
+            },
+        },
+    },
 ]
 
 
@@ -855,6 +946,55 @@ def _validate_sql_syntax(sql: str, dialect: str | None = None) -> str | None:
     except Exception:
         # If sqlglot itself fails, don't block — let the DB handle it
         return None
+
+
+def tool_set_editor_sql(
+    database_id: int,
+    sql: str,
+    schema_name: str | None = None,
+    catalog: str | None = None,
+) -> dict[str, Any]:
+    """
+    Validate the SQL by executing it (LIMIT 1), then return the frontend
+    action so it gets placed in the editor.  If the SQL fails, return the
+    error to the LLM so it can fix the query before trying again.
+    """
+    sql_stripped = sql.strip().upper()
+    is_select = sql_stripped.startswith("SELECT") or sql_stripped.startswith("WITH")
+
+    if is_select:
+        # Wrap in a validation query that returns at most 1 row
+        database = _get_database(database_id)
+        db_backend = database.backend.lower() if database.backend else ""
+        if "mssql" in db_backend:
+            validation_sql = f"SELECT TOP 1 * FROM ({sql}) AS _validation_check"
+        else:
+            validation_sql = f"SELECT * FROM ({sql}) AS _validation_check LIMIT 1"
+
+        try:
+            from superset_core.queries.types import QueryOptions
+            options = QueryOptions(
+                catalog=catalog,
+                schema=schema_name,
+                limit=1,
+            )
+            database.execute(validation_sql, options)
+            logger.info("set_editor_sql validation passed for SQL (%d chars)", len(sql))
+        except Exception as ex:
+            logger.warning(
+                "set_editor_sql validation FAILED: %s\nSQL: %s", ex, sql[:500]
+            )
+            return {
+                "error": (
+                    f"SQL validation failed — this query has errors and was NOT "
+                    f"sent to the editor. Fix the query and try set_editor_sql again. "
+                    f"DB error: {str(ex)}"
+                ),
+                "sql": sql,
+            }
+
+    # Validation passed (or non-SELECT) — send to frontend
+    return {"action": "set_editor_sql", "sql": sql}
 
 
 def tool_execute_sql(
@@ -1466,10 +1606,10 @@ def tool_create_chart(
 # --------------------------------------------------------------------------
 
 # Actions that are passed to the frontend without backend execution
-FRONTEND_ACTIONS = {"set_editor_sql"}
+FRONTEND_ACTIONS: set[str] = {"ask_user", "update_todo"}
 
 # Tools whose results contain actions to relay to the frontend
-TOOLS_WITH_ACTIONS = {"set_editor_sql", "create_chart"}
+TOOLS_WITH_ACTIONS = {"set_editor_sql", "create_chart", "ask_user", "update_todo"}
 
 
 def execute_tool(
@@ -1532,6 +1672,14 @@ def execute_tool(
             table_name=arguments["table_name"],
             schema_name=arguments["schema_name"],
             column_name=arguments["column_name"],
+            catalog=catalog,
+        )
+
+    if tool_name == "set_editor_sql":
+        return tool_set_editor_sql(
+            database_id=database_id,
+            sql=arguments["sql"],
+            schema_name=schema_name,
             catalog=catalog,
         )
 
