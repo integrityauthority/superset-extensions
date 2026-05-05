@@ -659,7 +659,7 @@ def _run_step_tools(
 
     for round_num in range(step_max_rounds):
         logger.info(
-            "  Step %d round %d/%d",
+            "  Step %s round %d/%d",
             step.step_id, round_num + 1, step_max_rounds,
         )
 
@@ -671,7 +671,7 @@ def _run_step_tools(
                 tools=TOOL_DEFINITIONS,
             )
         except Exception as ex:
-            logger.error("LLM error in step %d round %d: %s", step.step_id, round_num + 1, ex)
+            logger.error("LLM error in step %s round %d: %s", step.step_id, round_num + 1, ex)
             yield {"event": "_step_error", "data": {"error": str(ex)}}
             return
 
@@ -894,8 +894,8 @@ def _run_planner_stream(
         }
 
         logger.info(
-            "Planner: executing step %d/%d: %s",
-            step_idx + 1, len(plan.steps), step.description,
+            "Planner: executing step %s/%d: %s",
+            step.step_id, len(plan.steps), step.description,
         )
 
         # Build step-scoped system prompt
@@ -936,7 +936,7 @@ def _run_planner_stream(
 
             if step.retry_count < max_retries:
                 logger.info(
-                    "Planner: step %d failed (attempt %d/%d), will retry",
+                    "Planner: step %s failed (attempt %d/%d), will retry",
                     step.step_id, step.retry_count, max_retries,
                 )
                 step.status = "pending"
@@ -948,7 +948,7 @@ def _run_planner_stream(
                 continue
             else:
                 logger.warning(
-                    "Planner: step %d failed after %d retries, marking as error",
+                    "Planner: step %s failed after %d retries, marking as error",
                     step.step_id, max_retries,
                 )
                 yield {
@@ -983,7 +983,7 @@ def _run_planner_stream(
             )
             if updates:
                 logger.info(
-                    "Planner: checker returned %d updates after step %d",
+                    "Planner: checker returned %d updates after step %s",
                     len(updates), step.step_id,
                 )
                 apply_plan_updates(plan, step_idx, updates, max_steps=max_steps)
@@ -993,7 +993,7 @@ def _run_planner_stream(
                     "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
                 }
         except Exception as ex:
-            logger.warning("Planner: checker failed for step %d: %s", step.step_id, ex)
+            logger.warning("Planner: checker failed for step %s: %s", step.step_id, ex)
 
         step_idx += 1
 

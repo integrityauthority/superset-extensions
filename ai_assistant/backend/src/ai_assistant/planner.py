@@ -127,6 +127,10 @@ Your job:
 SUPER IMPORTANT: propagate discovered identifiers / concrete data to \
 remaining steps so the SQL generator can use them.
 
+IMPORTANT: step_id values MUST be integers (not strings like "5b").
+Use the existing step_id for updates, or the next sequential integer for \
+new steps.
+
 Return ONLY the JSON array — no markdown, no explanation.
 """
 
@@ -297,8 +301,16 @@ def apply_plan_updates(
     existing_map = {s.step_id: s for s in plan.steps[current_step_index + 1 :]}
 
     for u in updates:
-        sid = u.get("step_id")
-        if sid and sid in existing_map:
+        raw_sid = u.get("step_id")
+        # Normalize step_id to int (checker may return strings like "5b")
+        sid = None
+        if raw_sid is not None:
+            try:
+                sid = int(raw_sid)
+            except (ValueError, TypeError):
+                sid = None
+
+        if sid is not None and sid in existing_map:
             # Update existing step
             s = existing_map[sid]
             s.description = u.get("description", s.description)
@@ -312,8 +324,8 @@ def apply_plan_updates(
             s.retry_count = 0
             kept.append(s)
         else:
-            # New step from checker
-            new_id = sid or (kept[-1].step_id + 1 if kept else 1)
+            # New step from checker — assign next sequential int ID
+            new_id = kept[-1].step_id + 1 if kept else 1
             kept.append(PlanStep(
                 step_id=new_id,
                 description=u.get("description", f"Step {new_id}"),
