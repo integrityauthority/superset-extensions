@@ -1,6 +1,6 @@
 {
   "name": "@integrityauthority/vambery-ai-assistant",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "scripts": {
     "start": "webpack serve --mode development",
     "build": "webpack --stats-error-details --mode production"

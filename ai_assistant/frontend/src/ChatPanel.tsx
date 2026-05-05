@@ -921,6 +921,8 @@ const ChatPanel: React.FC = () => {
     setInput("");
     setLoading(true);
     setStreamingSteps([]);
+    setTodoItems([]);
+    setPendingQuestion(null);
 
     try {
       const context = await getContext();
