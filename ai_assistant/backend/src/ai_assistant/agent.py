@@ -616,8 +616,15 @@ def _build_step_system_prompt(
         f"**Description**: {step.description}\n"
         f"**Detailed request**: {step.request}\n"
         f"**Expected outcome**: {step.expected_outcome}\n\n"
-        f"Focus on completing THIS step. Use tools as needed. "
-        f"When this step is done, provide a brief summary of what you accomplished."
+        f"RULES FOR THIS STEP:\n"
+        f"- Focus ONLY on this step. Do NOT work on future steps.\n"
+        f"- Be efficient: call get_table_columns BEFORE writing SQL so you use "
+        f"correct column names.\n"
+        f"- If a search returns 0 rows, try 1-2 alternative approaches (different "
+        f"LIKE patterns, COLLATE, etc.) then STOP and report what you found.\n"
+        f"- Do NOT repeat the same query more than twice. Accept partial results.\n"
+        f"- When done, provide a brief summary of what you accomplished and any "
+        f"key data (IDs, names, counts) you discovered."
     )
 
     if previous_context:
@@ -654,8 +661,8 @@ def _run_step_tools(
         )},
     ]
 
-    # Limit per-step rounds (subset of global max_rounds)
-    step_max_rounds = min(max_rounds, 15)
+    # Limit per-step rounds — keep steps focused and efficient
+    step_max_rounds = min(max_rounds, 8)
 
     for round_num in range(step_max_rounds):
         logger.info(
