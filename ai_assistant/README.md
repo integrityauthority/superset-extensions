@@ -21,7 +21,7 @@ and charts, and create visualizations through a conversational interface.
 - **Live task progress** — shows a visible todo checklist during multi-step tasks (`update_todo`)
 - **SQL validation** — queries are validated against the database before being placed in the editor
 - **Custom system prompt** — override the built-in system prompt entirely via config or env var
-- **Internal task planning** — breaks complex requests into steps, verifies each result, never stops halfway
+- **Planner-Checker loop** — LLM-generated execution plan with step-by-step verification, automatic re-planning on failure, and configurable step limits (plan→execute→check→replan)
 - **Send to Editor** — click any SQL code block in the chat to send it to the editor
 - **Streaming** — tool call steps stream to the UI in real-time via SSE
 - **Multi-provider model selector** — combined dropdown shows models from all configured providers (e.g. `azure_openai/gpt-5.2-chat`, `ollama/qwen3.5:122b`), placed near the Send button
@@ -69,6 +69,9 @@ AI_ASSISTANT = {
     "system_prompt_extra": "",   # additional instructions appended to the system prompt
     "max_tool_rounds": 50,       # max tool-use rounds per conversation turn
     "max_sample_rows": 20,       # max rows for sample queries
+    "enable_planner": True,      # plan→execute→check→replan loop (set False for simple tool-calling)
+    "planner_max_steps": 15,     # upper bound on plan steps (configurable, no hard limit)
+    "planner_max_retries_per_step": 3,  # retries before marking a step as error
 
     # Azure OpenAI
     "azure_openai": {
@@ -129,6 +132,9 @@ AZURE_OPENAI_API_VERSION=2025-03-01-preview
 | `AI_SYSTEM_PROMPT_EXTRA` | `system_prompt_extra` | `""` |
 | `AI_MAX_TOOL_ROUNDS` | `max_tool_rounds` | `50` |
 | `AI_MAX_SAMPLE_ROWS` | `max_sample_rows` | `20` |
+| `AI_ENABLE_PLANNER` | `enable_planner` | `True` |
+| `AI_PLANNER_MAX_STEPS` | `planner_max_steps` | `15` |
+| `AI_PLANNER_MAX_RETRIES_PER_STEP` | `planner_max_retries_per_step` | `3` |
 
 ## Agent Tools
 
@@ -183,21 +189,26 @@ The AI agent has access to 17 tools organized by category:
 │  SQL Lab                                         │
 │  ┌──────────────────┐  ┌──────────────────────┐  │
 │  │  SQL Editor       │  │  Vambery AI Agent    │  │
-│  │  Results Table    │  │  Chat Panel          │  │
+│  │  Results Table    │  │  Chat Panel + Todo   │  │
 │  └──────────────────┘  └──────────────────────┘  │
 └──────────────────────────────────────────────────┘
          │                         │
          ▼                         ▼
 ┌──────────────┐       ┌────────────────────────┐
 │  Superset    │◄─────►│  AI Agent              │
-│  Internal    │       │  17 tools:             │
-│  APIs        │       │  - Schema exploration  │
-│              │       │  - SQL execution       │
-│  Database    │       │  - Chart management    │
-│  SqlaTable   │       │  - Dataset management  │
-│              │       │  - Interactive (UX)    │
-│  Slice       │       └───────────┬────────────┘
-└──────────────┘                   │
+│  Internal    │       │  ┌──────────────────┐  │
+│  APIs        │       │  │ Planner (LLM)    │  │
+│              │       │  │ plan→exec→check  │  │
+│  Database    │       │  └───────┬──────────┘  │
+│  SqlaTable   │       │          │             │
+│              │       │  17 tools:             │
+│  Slice       │       │  - Schema exploration  │
+└──────────────┘       │  - SQL execution       │
+                       │  - Chart management    │
+                       │  - Dataset management  │
+                       │  - Interactive (UX)    │
+                       └───────────┬────────────┘
+                                   │
                                    ▼
                          ┌──────────────────┐
                          │  LLM Provider    │
@@ -207,14 +218,20 @@ The AI agent has access to 17 tools organized by category:
                          └──────────────────┘
 ```
 
-**Flow:**
+**Flow (with planner enabled — default):**
 1. User types a question in the Chat Panel
 2. `POST /api/v1/ai_assistant/chat/stream` sends the message (SSE)
-3. `run_agent_stream()` starts the agent loop
-4. Agent calls LLM → LLM returns tool calls → agent executes tools → repeats
-5. Tools use Superset's internal Python APIs directly (Database, SqlaTable, Slice models)
-6. SSE events stream each step, action, and final response to the frontend
-7. Frontend applies actions (set SQL in editor, open chart preview)
+3. `run_agent_stream()` dispatches to `_run_planner_stream()`
+4. **Plan**: LLM generates a structured execution plan (JSON array of steps)
+5. **Execute**: Each step runs in its own agent sub-loop with full tool access
+6. **Check**: After each step, an LLM checker validates the result against the expected outcome
+7. **Replan**: If results are empty/wrong/unexpected, the checker rewrites remaining steps with discovered identifiers
+8. **Summary**: After all steps, LLM generates a final summary
+9. SSE events stream each step, action, `update_todo` progress, and final response to the frontend
+10. Frontend applies actions (set SQL in editor, open chart preview, show todo progress)
+
+**Flow (simple mode, `enable_planner=False`):**
+1–7. Same as before v0.4.0: direct LLM→tools loop without planning
 
 ## API Endpoints
 

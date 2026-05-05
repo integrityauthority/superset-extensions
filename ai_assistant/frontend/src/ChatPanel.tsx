@@ -250,7 +250,7 @@ function getStyles(t: themeApi.SupersetTheme) {
       alignItems: "flex-start",
     },
     stepIcon: (isError: boolean) => ({
-      color: isError ? t.colorError : t.colorSuccess,
+      color: isError ? `${t.colorError}` : `${t.colorSuccess}`,
       flexShrink: 0,
     }),
     stepArgs: {
@@ -577,15 +577,15 @@ function getStyles(t: themeApi.SupersetTheme) {
       fontSize: t.fontSizeSM,
       color:
         status === "done"
-          ? t.colorSuccess
+          ? `${t.colorSuccess}`
           : status === "error"
-          ? t.colorError
+          ? `${t.colorError}`
           : status === "in_progress"
-          ? t.colorPrimary
-          : t.colorTextQuaternary,
+          ? `${t.colorPrimary}`
+          : `${t.colorTextQuaternary}`,
     }),
     todoText: (status: string) => ({
-      color: status === "done" ? t.colorTextTertiary : t.colorText,
+      color: status === "done" ? `${t.colorTextTertiary}` : `${t.colorText}`,
       textDecoration: status === "done" ? "line-through" : "none",
     }),
     todoSpinner: {
