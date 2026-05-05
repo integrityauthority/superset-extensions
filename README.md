@@ -17,6 +17,7 @@ An AI-powered data assistant that lives inside SQL Lab. Ask questions in natural
 - **Dataset and chart management** — browse, inspect, and edit existing Superset objects
 - **Clarification questions** — the AI asks clickable option buttons when the request is ambiguous
 - **Live task progress** — visible todo checklist shows real-time progress on multi-step tasks
+- **Planner-Checker loop** — LLM-generated execution plan with step-by-step verification and automatic re-planning
 - **SQL validation** — queries are validated against the database before being placed in the editor
 - Send to Editor buttons on all SQL code blocks
 - Streaming responses with real-time tool-use visibility

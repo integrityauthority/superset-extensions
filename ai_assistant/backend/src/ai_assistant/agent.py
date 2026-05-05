@@ -31,6 +31,14 @@ from typing import Any
 
 from ai_assistant.config import get_ai_config, get_provider_config
 from ai_assistant.llm import create_chat_completion
+from ai_assistant.planner import (
+    create_plan,
+    check_step_result,
+    apply_plan_updates,
+    plan_to_todo_items,
+    ExecutionPlan,
+    PlanStep,
+)
 from ai_assistant.tools import execute_tool, TOOLS_WITH_ACTIONS, TOOL_DEFINITIONS
 
 logger = logging.getLogger(__name__)
@@ -292,17 +300,11 @@ def run_agent(
     provider_override: str | None = None,
 ) -> dict[str, Any]:
     """
-    Run the AI agent loop.
+    Run the AI agent loop (non-streaming).
 
-    Args:
-        messages: Conversation history (user and assistant messages)
-        database_id: The Superset database ID for tool execution
-        database_name: Display name of the database (for context)
-        schema_name: Selected schema name (for context)
-        catalog: Selected catalog (for context)
-        current_sql: Current SQL in the editor (for context)
-        model_override: Override the configured model name at runtime
-        provider_override: Override the configured provider at runtime
+    Consumes the streaming generator and collects the results into a single
+    response dict.  This keeps the logic DRY — both the planner and simple
+    paths are defined in the streaming generators.
 
     Returns:
         {
@@ -312,182 +314,48 @@ def run_agent(
             "usage": {"prompt_tokens": ..., "completion_tokens": ..., "total_tokens": ...}
         }
     """
-    config = get_ai_config()
-    provider = provider_override or config["provider"]
-    provider_config = get_provider_config(provider)
-    if model_override:
-        provider_config = {**provider_config, "model": model_override}
-    max_rounds = config.get("max_tool_rounds", 10)
-    max_sample_rows = config.get("max_sample_rows", 20)
-
-    # Detect database engine type for dialect-specific prompting
-    db_engine_type = _detect_db_engine_type(database_id)
-
-    # Build system prompt with context
-    system_prompt = build_system_prompt(
-        database_name=database_name,
-        schema_name=schema_name,
-        current_sql=current_sql,
-        extra_prompt=config.get("system_prompt_extra", ""),
-        db_engine_type=db_engine_type,
-        system_prompt_override=config.get("system_prompt_override", ""),
-    )
-
-    # Prepare conversation with system prompt
-    llm_messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system_prompt},
-    ]
-    # Add conversation history
-    for msg in messages:
-        llm_messages.append({"role": msg["role"], "content": msg["content"]})
-
     steps: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
+    final_response = ""
     total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    has_error = False
 
-    for round_num in range(max_rounds):
-        logger.info("Agent round %d/%d", round_num + 1, max_rounds)
+    for event in run_agent_stream(
+        messages=messages,
+        database_id=database_id,
+        database_name=database_name,
+        schema_name=schema_name,
+        catalog=catalog,
+        current_sql=current_sql,
+        model_override=model_override,
+        provider_override=provider_override,
+    ):
+        evt_type = event.get("event")
+        data = event.get("data", {})
 
-        try:
-            result = create_chat_completion(
-                provider_config=provider_config,
-                provider=provider,
-                messages=llm_messages,
-                tools=TOOL_DEFINITIONS,
-            )
-        except Exception as ex:
-            logger.error("LLM API error in round %d: %s", round_num + 1, ex)
-            return {
-                "response": f"Error communicating with AI: {str(ex)}",
-                "actions": actions,
-                "steps": steps,
-                "usage": total_usage,
-                "error": True,
-            }
+        if evt_type == "step":
+            steps.append(data)
+        elif evt_type == "action":
+            actions.append(data)
+        elif evt_type == "response":
+            final_response = data.get("response", "")
+            usage = data.get("usage", {})
+            total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+            total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+            total_usage["total_tokens"] += usage.get("total_tokens", 0)
+        elif evt_type == "error":
+            final_response = data.get("error", "Unknown error")
+            has_error = True
 
-        # Accumulate usage
-        usage = result.get("usage", {})
-        total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
-        total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
-        total_usage["total_tokens"] += usage.get("total_tokens", 0)
-
-        assistant_message = result["message"]
-        finish_reason = result["finish_reason"]
-
-        # Check for tool calls
-        tool_calls = assistant_message.get("tool_calls")
-
-        if tool_calls and finish_reason in ("tool_calls", "stop"):
-            # Add assistant message with tool calls to conversation
-            llm_messages.append(assistant_message)
-
-            for tool_call in tool_calls:
-                func = tool_call["function"]
-                tool_name = func["name"]
-                try:
-                    tool_args = json.loads(func["arguments"])
-                except json.JSONDecodeError:
-                    tool_args = {}
-
-                logger.info(
-                    "Tool call: %s(%s)",
-                    tool_name,
-                    json.dumps(tool_args, default=str)[:200],
-                )
-
-                # Execute the tool
-                tool_result = execute_tool(
-                    tool_name=tool_name,
-                    arguments=tool_args,
-                    database_id=database_id,
-                    schema_name=schema_name,
-                    catalog=catalog,
-                    max_sample_rows=max_sample_rows,
-                )
-
-                # Track actions to relay to the frontend (only if no error)
-                if tool_name in TOOLS_WITH_ACTIONS and "error" not in tool_result:
-                    if "action" in tool_result:
-                        # Normalize: frontend expects "type" key, not "action"
-                        action_data = {**tool_result}
-                        action_data["type"] = action_data.pop("action")
-                        actions.append(action_data)
-                    else:
-                        actions.append({"type": tool_name, **tool_args})
-
-                # Record step for debugging/display
-                steps.append(
-                    {
-                        "type": "tool_call",
-                        "tool": tool_name,
-                        "args": tool_args,
-                        "result_summary": _summarize_result(tool_result),
-                    }
-                )
-
-                # Add tool result to conversation
-                tool_result_str = json.dumps(tool_result, default=str)
-                llm_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "content": tool_result_str,
-                    }
-                )
-
-            # Continue the loop for the next LLM call
-            continue
-
-        # No tool calls - this is the final response
-        final_content = assistant_message.get("content", "")
-        logger.info(
-            "Agent completed in %d rounds. Actions: %d",
-            round_num + 1,
-            len(actions),
-        )
-
-        return {
-            "response": final_content,
-            "actions": actions,
-            "steps": steps,
-            "usage": total_usage,
-        }
-
-    # Max rounds exceeded — force a final answer without tools
-    logger.warning("Agent exceeded max rounds (%d), forcing final answer", max_rounds)
-    llm_messages.append({
-        "role": "user",
-        "content": (
-            "You have used all available tool calls. You MUST now provide your "
-            "final answer based on everything you've learned so far. Summarize "
-            "your findings, present the best query you have, and call set_editor_sql "
-            "if you haven't already. Do NOT say you haven't finished."
-        ),
-    })
-    try:
-        final_result = create_chat_completion(
-            provider_config=provider_config,
-            provider=provider,
-            messages=llm_messages,
-            tools=None,
-        )
-        forced_content = final_result.get("message", {}).get("content", "")
-        usage = final_result.get("usage", {})
-        total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
-        total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
-        total_usage["total_tokens"] += usage.get("total_tokens", 0)
-    except Exception:
-        forced_content = ""
-
-    return {
-        "response": forced_content or (
-            "I explored the database extensively but ran out of tool calls. "
-            "Please try again with a more specific question."
-        ),
+    result: dict[str, Any] = {
+        "response": final_response or "No response generated.",
         "actions": actions,
         "steps": steps,
         "usage": total_usage,
     }
+    if has_error:
+        result["error"] = True
+    return result
 
 
 def run_agent_stream(
@@ -503,11 +371,47 @@ def run_agent_stream(
     """
     Streaming version of run_agent.
 
-    Yields SSE-style event dicts as the agent processes:
+    Dispatches to the planner-driven loop (``_run_planner_stream``) when
+    ``enable_planner`` is True, otherwise falls back to the simple
+    tool-calling loop (``_run_simple_stream``).
+
+    Both paths yield the same SSE-style event dicts:
         {"event": "step",     "data": {"type": "tool_call", "tool": ..., ...}}
         {"event": "action",   "data": {"type": "set_editor_sql", "sql": ...}}
         {"event": "response", "data": {"response": ..., "usage": ...}}
         {"event": "error",    "data": {"error": ...}}
+    """
+    config = get_ai_config()
+    enable_planner = config.get("enable_planner", True)
+
+    if enable_planner:
+        logger.info("Agent: using planner-driven stream")
+        yield from _run_planner_stream(
+            messages, database_id, database_name, schema_name,
+            catalog, current_sql, model_override, provider_override,
+        )
+    else:
+        logger.info("Agent: using simple tool-calling stream")
+        yield from _run_simple_stream(
+            messages, database_id, database_name, schema_name,
+            catalog, current_sql, model_override, provider_override,
+        )
+
+
+def _run_simple_stream(
+    messages: list[dict[str, Any]],
+    database_id: int,
+    database_name: str | None = None,
+    schema_name: str | None = None,
+    catalog: str | None = None,
+    current_sql: str | None = None,
+    model_override: str | None = None,
+    provider_override: str | None = None,
+) -> Any:
+    """Original simple tool-calling stream (no planner).
+
+    Kept as fallback when ``enable_planner`` is False or when the planner
+    fails to create a plan.
     """
     config = get_ai_config()
     provider = provider_override or config["provider"]
@@ -674,6 +578,474 @@ def run_agent_stream(
                 "I explored the database extensively but ran out of tool calls. "
                 "Please try again with a more specific question."
             ),
+            "usage": total_usage,
+        },
+    }
+
+
+def _build_schema_context(
+    database_name: str | None,
+    schema_name: str | None,
+    db_engine_type: str | None,
+) -> str:
+    """Build a short context string for the planner about the current DB."""
+    parts: list[str] = []
+    if database_name:
+        parts.append(f"Database: {database_name}")
+    if schema_name:
+        parts.append(f"Schema: {schema_name}")
+    if db_engine_type:
+        parts.append(f"SQL dialect: {db_engine_type}")
+    return "\n".join(parts) if parts else "No database context available."
+
+
+def _build_step_system_prompt(
+    base_system_prompt: str,
+    step: PlanStep,
+    previous_context: list[dict[str, str]],
+) -> str:
+    """Build a system prompt scoped to a specific plan step.
+
+    Includes the full base system prompt plus step-specific instructions
+    and accumulated context from earlier steps.
+    """
+    parts = [base_system_prompt]
+
+    parts.append(
+        f"\n## Current Task (Step {step.step_id})\n"
+        f"**Description**: {step.description}\n"
+        f"**Detailed request**: {step.request}\n"
+        f"**Expected outcome**: {step.expected_outcome}\n\n"
+        f"Focus on completing THIS step. Use tools as needed. "
+        f"When this step is done, provide a brief summary of what you accomplished."
+    )
+
+    if previous_context:
+        ctx_text = "\n## Results from Previous Steps\n"
+        for ctx in previous_context:
+            ctx_text += f"- **Step {ctx['step_id']}** ({ctx['description']}): {ctx['summary']}\n"
+        parts.append(ctx_text)
+
+    return "\n".join(parts)
+
+
+def _run_step_tools(
+    step: PlanStep,
+    system_prompt: str,
+    user_question: str,
+    provider_config: dict[str, Any],
+    provider: str,
+    database_id: int,
+    schema_name: str | None,
+    catalog: str | None,
+    max_sample_rows: int,
+    max_rounds: int,
+) -> Any:
+    """Execute a single plan step using the tool-calling loop.
+
+    This is a generator that yields SSE events (step, action) and finally
+    returns the step's text summary via a special ``_step_done`` event.
+    """
+    llm_messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": (
+            f"Execute this step: {step.request}\n\n"
+            f"Original user question for context: {user_question}"
+        )},
+    ]
+
+    # Limit per-step rounds (subset of global max_rounds)
+    step_max_rounds = min(max_rounds, 15)
+
+    for round_num in range(step_max_rounds):
+        logger.info(
+            "  Step %d round %d/%d",
+            step.step_id, round_num + 1, step_max_rounds,
+        )
+
+        try:
+            result = create_chat_completion(
+                provider_config=provider_config,
+                provider=provider,
+                messages=llm_messages,
+                tools=TOOL_DEFINITIONS,
+            )
+        except Exception as ex:
+            logger.error("LLM error in step %d round %d: %s", step.step_id, round_num + 1, ex)
+            yield {"event": "_step_error", "data": {"error": str(ex)}}
+            return
+
+        assistant_message = result["message"]
+        finish_reason = result["finish_reason"]
+        tool_calls = assistant_message.get("tool_calls")
+
+        if tool_calls and finish_reason in ("tool_calls", "stop"):
+            llm_messages.append(assistant_message)
+
+            last_result_summary = ""
+            last_context_snippet = ""
+
+            for tool_call in tool_calls:
+                func = tool_call["function"]
+                tool_name = func["name"]
+                try:
+                    tool_args = json.loads(func["arguments"])
+                except json.JSONDecodeError:
+                    tool_args = {}
+
+                logger.info(
+                    "  Tool call: %s(%s)",
+                    tool_name,
+                    json.dumps(tool_args, default=str)[:200],
+                )
+
+                tool_result = execute_tool(
+                    tool_name=tool_name,
+                    arguments=tool_args,
+                    database_id=database_id,
+                    schema_name=schema_name,
+                    catalog=catalog,
+                    max_sample_rows=max_sample_rows,
+                )
+
+                summary = _summarize_result(tool_result)
+                last_result_summary = summary
+
+                # Keep a compact snippet for the checker (first 500 chars of result)
+                snippet = json.dumps(tool_result, default=str)[:500]
+                last_context_snippet = snippet
+
+                # Yield step event
+                yield {
+                    "event": "step",
+                    "data": {
+                        "type": "tool_call",
+                        "tool": tool_name,
+                        "args": tool_args,
+                        "result_summary": summary,
+                    },
+                }
+
+                # Yield action events
+                if tool_name in TOOLS_WITH_ACTIONS and "error" not in tool_result:
+                    if "action" in tool_result:
+                        action_data = {**tool_result}
+                        action_data["type"] = action_data.pop("action")
+                        yield {"event": "action", "data": action_data}
+                    else:
+                        yield {
+                            "event": "action",
+                            "data": {"type": tool_name, **tool_args},
+                        }
+
+                tool_result_str = json.dumps(tool_result, default=str)
+                llm_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "content": tool_result_str,
+                })
+
+            # Update step context after each tool round
+            step.result_summary = last_result_summary
+            step.context_snippet = last_context_snippet
+
+            continue
+
+        # No tool calls — step is done, LLM returned a text summary
+        final_content = assistant_message.get("content", "")
+        step.result_summary = final_content[:300] if final_content else step.result_summary
+        yield {
+            "event": "_step_done",
+            "data": {"summary": final_content, "result_summary": step.result_summary},
+        }
+        return
+
+    # Per-step round limit hit
+    step.result_summary = step.result_summary or "Step completed (max rounds reached)"
+    yield {
+        "event": "_step_done",
+        "data": {"summary": step.result_summary, "result_summary": step.result_summary},
+    }
+
+
+def _run_planner_stream(
+    messages: list[dict[str, Any]],
+    database_id: int,
+    database_name: str | None = None,
+    schema_name: str | None = None,
+    catalog: str | None = None,
+    current_sql: str | None = None,
+    model_override: str | None = None,
+    provider_override: str | None = None,
+) -> Any:
+    """Planner-driven streaming agent.
+
+    Implements: plan → per-step execute → check → replan → summary.
+    Yields the same SSE events as ``run_agent_stream`` so the frontend
+    doesn't need any changes.
+    """
+    config = get_ai_config()
+    provider = provider_override or config["provider"]
+    provider_config = get_provider_config(provider)
+    if model_override:
+        provider_config = {**provider_config, "model": model_override}
+
+    max_rounds = config.get("max_tool_rounds", 10)
+    max_sample_rows = config.get("max_sample_rows", 20)
+    max_steps = config.get("planner_max_steps", 15)
+    max_retries = config.get("planner_max_retries_per_step", 3)
+
+    db_engine_type = _detect_db_engine_type(database_id)
+
+    base_system_prompt = build_system_prompt(
+        database_name=database_name,
+        schema_name=schema_name,
+        current_sql=current_sql,
+        extra_prompt=config.get("system_prompt_extra", ""),
+        db_engine_type=db_engine_type,
+        system_prompt_override=config.get("system_prompt_override", ""),
+    )
+
+    # Extract the user's latest question from conversation history
+    user_question = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            user_question = msg.get("content", "")
+            break
+
+    if not user_question:
+        yield {"event": "error", "data": {"error": "No user question found"}}
+        return
+
+    total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    # --- Phase 1: Create plan ---
+    logger.info("Planner: creating plan for: %s", user_question[:200])
+    yield {
+        "event": "step",
+        "data": {
+            "type": "tool_call",
+            "tool": "create_plan",
+            "args": {"question": user_question[:100]},
+            "result_summary": "Creating execution plan...",
+        },
+    }
+
+    schema_context = _build_schema_context(database_name, schema_name, db_engine_type)
+
+    try:
+        plan = create_plan(
+            question=user_question,
+            schema_context=schema_context,
+            provider_config=provider_config,
+            provider=provider,
+            max_steps=max_steps,
+        )
+    except Exception as ex:
+        logger.error("Planner failed to create plan: %s", ex)
+        # Fallback to simple stream
+        yield {
+            "event": "step",
+            "data": {
+                "type": "tool_call",
+                "tool": "create_plan",
+                "args": {},
+                "result_summary": f"Plan creation failed: {ex} — falling back to simple mode",
+            },
+        }
+        yield from _run_simple_stream(
+            messages, database_id, database_name, schema_name,
+            catalog, current_sql, model_override, provider_override,
+        )
+        return
+
+    logger.info("Planner: plan created with %d steps", len(plan.steps))
+
+    # Emit plan as update_todo
+    yield {
+        "event": "step",
+        "data": {
+            "type": "tool_call",
+            "tool": "create_plan",
+            "args": {"question": user_question[:100]},
+            "result_summary": f"Plan created: {len(plan.steps)} steps",
+        },
+    }
+    yield {
+        "event": "action",
+        "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
+    }
+
+    # --- Phase 2: Execute steps ---
+    previous_context: list[dict[str, str]] = []
+    step_idx = 0
+
+    while step_idx < len(plan.steps):
+        step = plan.steps[step_idx]
+
+        if step.status == "done":
+            step_idx += 1
+            continue
+
+        step.status = "in_progress"
+        yield {
+            "event": "action",
+            "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
+        }
+
+        logger.info(
+            "Planner: executing step %d/%d: %s",
+            step_idx + 1, len(plan.steps), step.description,
+        )
+
+        # Build step-scoped system prompt
+        step_system_prompt = _build_step_system_prompt(
+            base_system_prompt, step, previous_context,
+        )
+
+        # Execute step
+        step_error = None
+        step_summary = ""
+
+        for evt in _run_step_tools(
+            step=step,
+            system_prompt=step_system_prompt,
+            user_question=user_question,
+            provider_config=provider_config,
+            provider=provider,
+            database_id=database_id,
+            schema_name=schema_name,
+            catalog=catalog,
+            max_sample_rows=max_sample_rows,
+            max_rounds=max_rounds,
+        ):
+            if evt["event"] == "_step_done":
+                step_summary = evt["data"].get("summary", "")
+                break
+            elif evt["event"] == "_step_error":
+                step_error = evt["data"].get("error", "Unknown error")
+                break
+            else:
+                # Pass through step/action events to the frontend
+                yield evt
+
+        if step_error:
+            step.status = "error"
+            step.error = step_error
+            step.retry_count += 1
+
+            if step.retry_count < max_retries:
+                logger.info(
+                    "Planner: step %d failed (attempt %d/%d), will retry",
+                    step.step_id, step.retry_count, max_retries,
+                )
+                step.status = "pending"
+                yield {
+                    "event": "action",
+                    "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
+                }
+                # Don't advance step_idx — retry the same step
+                continue
+            else:
+                logger.warning(
+                    "Planner: step %d failed after %d retries, marking as error",
+                    step.step_id, max_retries,
+                )
+                yield {
+                    "event": "action",
+                    "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
+                }
+                step_idx += 1
+                continue
+
+        # Step succeeded
+        step.status = "done"
+        step.result_summary = step_summary[:300] if step_summary else step.result_summary
+
+        previous_context.append({
+            "step_id": str(step.step_id),
+            "description": step.description,
+            "summary": step.result_summary or "(no summary)",
+        })
+
+        yield {
+            "event": "action",
+            "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
+        }
+
+        # --- Phase 3: Check & replan ---
+        try:
+            updates = check_step_result(
+                plan=plan,
+                current_step=step,
+                provider_config=provider_config,
+                provider=provider,
+            )
+            if updates:
+                logger.info(
+                    "Planner: checker returned %d updates after step %d",
+                    len(updates), step.step_id,
+                )
+                apply_plan_updates(plan, step_idx, updates, max_steps=max_steps)
+                # Emit updated plan
+                yield {
+                    "event": "action",
+                    "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
+                }
+        except Exception as ex:
+            logger.warning("Planner: checker failed for step %d: %s", step.step_id, ex)
+
+        step_idx += 1
+
+    # --- Phase 4: Final summary ---
+    logger.info("Planner: all steps done, generating summary")
+
+    summary_parts = [
+        f"Original question: {user_question}\n\nExecution results:"
+    ]
+    for ctx in previous_context:
+        summary_parts.append(f"- Step {ctx['step_id']} ({ctx['description']}): {ctx['summary']}")
+
+    # Mark all todos done
+    for s in plan.steps:
+        if s.status != "error":
+            s.status = "done"
+    yield {
+        "event": "action",
+        "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
+    }
+
+    # Ask LLM for a coherent final response
+    summary_messages: list[dict[str, Any]] = [
+        {"role": "system", "content": base_system_prompt},
+        {"role": "user", "content": (
+            f"You have completed a multi-step task. Here is what was accomplished:\n\n"
+            + "\n".join(summary_parts) +
+            f"\n\nProvide a clear, complete summary for the user. "
+            f"Include key findings, any SQL queries that were set in the editor, "
+            f"and any charts that were created."
+        )},
+    ]
+
+    try:
+        final_result = create_chat_completion(
+            provider_config=provider_config,
+            provider=provider,
+            messages=summary_messages,
+            tools=None,
+        )
+        final_content = final_result.get("message", {}).get("content", "")
+        usage = final_result.get("usage", {})
+        total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+        total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+        total_usage["total_tokens"] += usage.get("total_tokens", 0)
+    except Exception:
+        final_content = "\n".join(summary_parts)
+
+    yield {
+        "event": "response",
+        "data": {
+            "response": final_content or "Task completed.",
             "usage": total_usage,
         },
     }

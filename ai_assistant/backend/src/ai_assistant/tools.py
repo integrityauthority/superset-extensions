@@ -1037,6 +1037,7 @@ def tool_execute_sql(
             "columns": columns,
             "row_count": len(rows),
             "data": rows,
+            "is_empty": len(rows) == 0,
         }
     except Exception as ex:
         logger.error("Error executing SQL in db %s: %s\nSQL: %s", database_id, ex, sql)

@@ -42,6 +42,10 @@ Example superset_config.py entry:
         "system_prompt_extra": "",
         "max_tool_rounds": 10,
         "max_sample_rows": 20,
+        # Planner settings (plan→execute→check→replan loop)
+        "enable_planner": True,      # Set False to revert to simple tool-calling loop
+        "planner_max_steps": 15,     # Upper bound on plan steps (configurable, no hard limit)
+        "planner_max_retries_per_step": 3,  # Retries before marking a step as error
     }
 """
 
@@ -63,6 +67,9 @@ ENV_MAPPING: dict[str, str] = {
     "system_prompt_extra": "AI_SYSTEM_PROMPT_EXTRA",
     "max_tool_rounds": "AI_MAX_TOOL_ROUNDS",
     "max_sample_rows": "AI_MAX_SAMPLE_ROWS",
+    "enable_planner": "AI_ENABLE_PLANNER",
+    "planner_max_steps": "AI_PLANNER_MAX_STEPS",
+    "planner_max_retries_per_step": "AI_PLANNER_MAX_RETRIES_PER_STEP",
 }
 
 AZURE_ENV_MAPPING: dict[str, str] = {
@@ -94,6 +101,9 @@ DEFAULTS: dict[str, Any] = {
     "system_prompt_extra": "",
     "max_tool_rounds": 50,
     "max_sample_rows": 20,
+    "enable_planner": True,
+    "planner_max_steps": 15,
+    "planner_max_retries_per_step": 3,
 }
 
 
@@ -116,13 +126,16 @@ def _read_env_config() -> dict[str, Any]:
     for config_key, env_var in ENV_MAPPING.items():
         val = os.environ.get(env_var)
         if val is not None:
-            if config_key in ("max_tool_rounds", "max_sample_rows"):
+            if config_key in ("max_tool_rounds", "max_sample_rows",
+                              "planner_max_steps", "planner_max_retries_per_step"):
                 try:
                     env_config[config_key] = int(val)
                 except ValueError:
                     logger.warning(
                         "Invalid integer for %s: %s", env_var, val
                     )
+            elif config_key == "enable_planner":
+                env_config[config_key] = val.lower() in ("1", "true", "yes")
             else:
                 env_config[config_key] = val
 
