@@ -44,7 +44,7 @@ Example superset_config.py entry:
         "max_sample_rows": 20,
         # Planner settings (plan→execute→check→replan loop)
         "enable_planner": True,      # Set False to revert to simple tool-calling loop
-        "planner_max_steps": 15,     # Upper bound on plan steps (configurable, no hard limit)
+        "planner_max_steps": 25,     # Upper bound on plan steps (configurable, no hard limit)
         "planner_max_retries_per_step": 3,  # Retries before marking a step as error
     }
 """
@@ -102,7 +102,7 @@ DEFAULTS: dict[str, Any] = {
     "max_tool_rounds": 50,
     "max_sample_rows": 20,
     "enable_planner": True,
-    "planner_max_steps": 15,
+    "planner_max_steps": 25,
     "planner_max_retries_per_step": 3,
 }
 
