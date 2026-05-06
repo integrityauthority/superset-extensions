@@ -582,6 +582,40 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     # ------------------------------------------------------------------
+    # Dashboard creation
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "create_dashboard",
+            "description": (
+                "Create a Superset dashboard from a list of saved chart IDs. "
+                "The charts will be arranged in a responsive grid layout. "
+                "Use this AFTER creating and saving charts with create_chart(save_chart=true). "
+                "The dashboard is saved permanently and accessible from the Dashboards menu."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dashboard_title": {
+                        "type": "string",
+                        "description": "Title for the dashboard (e.g. '[AI] HUNIKA Kft - Pénzügyi áttekintés')",
+                    },
+                    "chart_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "List of saved chart IDs to include in the dashboard.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional description for the dashboard.",
+                    },
+                },
+                "required": ["dashboard_title", "chart_ids"],
+            },
+        },
+    },
+    # ------------------------------------------------------------------
     # Interactive tools (frontend-only actions)
     # ------------------------------------------------------------------
     {
@@ -1602,6 +1636,77 @@ def tool_create_chart(
         return {"error": f"Failed to create chart: {str(ex)}"}
 
 
+def tool_create_dashboard(
+    chart_ids: list[int],
+    dashboard_title: str,
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Create a Superset dashboard from saved chart IDs."""
+    try:
+        from superset.commands.dashboard.create import CreateDashboardCommand
+        from superset.utils import json as superset_json
+
+        # Build a simple grid layout — 2 columns, each chart 6 units wide
+        position_json: dict[str, Any] = {
+            "DASHBOARD_VERSION_KEY": "v2",
+            "ROOT_ID": {"type": "ROOT", "id": "ROOT_ID", "children": ["GRID_ID"]},
+            "GRID_ID": {"type": "GRID", "id": "GRID_ID", "children": [], "parents": ["ROOT_ID"]},
+            "HEADER_ID": {"type": "HEADER", "id": "HEADER_ID", "meta": {"text": dashboard_title}},
+        }
+
+        row_children: list[str] = []
+        for idx, chart_id in enumerate(chart_ids):
+            chart_key = f"CHART-ai-{idx}"
+            row_key = f"ROW-ai-{idx}"
+
+            position_json[chart_key] = {
+                "type": "CHART",
+                "id": chart_key,
+                "children": [],
+                "parents": ["ROOT_ID", "GRID_ID", row_key],
+                "meta": {
+                    "chartId": chart_id,
+                    "width": 6,
+                    "height": 50,
+                    "sliceName": f"Chart {idx + 1}",
+                },
+            }
+            position_json[row_key] = {
+                "type": "ROW",
+                "id": row_key,
+                "children": [chart_key],
+                "parents": ["ROOT_ID", "GRID_ID"],
+            }
+            position_json["GRID_ID"]["children"].append(row_key)
+
+        payload: dict[str, Any] = {
+            "dashboard_title": dashboard_title,
+            "position_json": superset_json.dumps(position_json),
+        }
+        if description:
+            payload["description"] = description
+
+        dashboard = CreateDashboardCommand(payload).run()
+        db.session.commit()
+
+        dashboard_url = f"/superset/dashboard/{dashboard.id}/"
+        logger.info(
+            "Created dashboard: id=%s, title=%s, charts=%s, url=%s",
+            dashboard.id, dashboard_title, chart_ids, dashboard_url,
+        )
+
+        return {
+            "dashboard_id": dashboard.id,
+            "dashboard_title": dashboard_title,
+            "dashboard_url": dashboard_url,
+            "chart_count": len(chart_ids),
+        }
+
+    except Exception as ex:
+        logger.error("Error creating dashboard '%s': %s", dashboard_title, ex, exc_info=True)
+        return {"error": f"Failed to create dashboard: {str(ex)}"}
+
+
 # --------------------------------------------------------------------------
 # Tool dispatcher
 # --------------------------------------------------------------------------
@@ -1747,6 +1852,13 @@ def execute_tool(
             viz_type=arguments.get("viz_type"),
             params=arguments.get("params"),
             datasource_id=arguments.get("datasource_id"),
+        )
+
+    if tool_name == "create_dashboard":
+        return tool_create_dashboard(
+            chart_ids=arguments["chart_ids"],
+            dashboard_title=arguments["dashboard_title"],
+            description=arguments.get("description"),
         )
 
     return {"error": f"Unknown tool: {tool_name}"}

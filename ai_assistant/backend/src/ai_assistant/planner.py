@@ -77,8 +77,8 @@ Given a user question and database/schema context, create an execution plan \
 that DELIVERS what the user asked for.  Each step will be executed by an AI \
 agent with tools: list_schemas, list_tables, list_views, get_table_columns, \
 sample_table_data, get_distinct_values, execute_sql, set_editor_sql, \
-create_chart, list_datasets, get_dataset, update_dataset, list_charts, \
-get_chart, update_chart.
+create_chart, create_dashboard, list_datasets, get_dataset, update_dataset, \
+list_charts, get_chart, update_chart.
 
 CRITICAL RULES — read carefully:
 1. **User's end goal comes first.** If the user asks for a dashboard with \
@@ -97,12 +97,17 @@ CRITICAL RULES — read carefully:
    for each name variant.
 5. **Steps that create charts or set SQL are mandatory.** If the user asks \
    for charts/dashboards, at least 30% of steps should be create_chart calls.
-6. **Graceful fallback.** If a search might fail, include the fallback \
+6. **Charts MUST be saved.** Always use save_chart=true when creating charts \
+   so they get a permanent ID. This is required for adding them to dashboards.
+7. **Dashboard creation.** If the user asks for a dashboard, the LAST step \
+   must call create_dashboard with the chart IDs from previous steps. This \
+   creates a real, permanent Superset dashboard.
+8. **Graceful fallback.** If a search might fail, include the fallback \
    strategy IN the same step's request (e.g. "search for X, if not found \
    try Y and Z variants"), not as separate steps.
-7. Steps may reference results from earlier steps (e.g. "use company_id=42 \
+9. Steps may reference results from earlier steps (e.g. "use company_id=42 \
    found in step 1").
-8. Return ONLY a JSON array — no markdown fences, no explanation.
+10. Return ONLY a JSON array — no markdown fences, no explanation.
 
 Output format:
 [

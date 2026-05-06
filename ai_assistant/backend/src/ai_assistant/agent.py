@@ -71,6 +71,7 @@ and manage Superset datasets and charts.
 - **Create charts** (bar, line, pie, table) from query results
 - **Browse and manage Superset datasets** (list, inspect, edit)
 - **Browse and manage Superset charts** (list, inspect, edit)
+- **Create dashboards** from saved charts (`create_dashboard`)
 - **Ask clarification questions** with clickable option buttons (`ask_user`)
 - **Show task progress** with a visible todo checklist (`update_todo`)
 
@@ -623,6 +624,8 @@ def _build_step_system_prompt(
         f"- If a search returns 0 rows, try 1-2 alternative approaches (different "
         f"LIKE patterns, COLLATE, etc.) then STOP and report what you found.\n"
         f"- Do NOT repeat the same query more than twice. Accept partial results.\n"
+        f"- Do NOT call ask_user. You are running in autonomous planner mode — "
+        f"make your own best-guess decisions and keep going.\n"
         f"- When done, provide a brief summary of what you accomplished and any "
         f"key data (IDs, names, counts) you discovered."
     )
