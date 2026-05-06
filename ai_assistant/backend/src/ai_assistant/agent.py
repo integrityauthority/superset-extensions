@@ -604,6 +604,7 @@ def _build_step_system_prompt(
     base_system_prompt: str,
     step: PlanStep,
     previous_context: list[dict[str, str]],
+    is_first_step: bool = False,
 ) -> str:
     """Build a system prompt scoped to a specific plan step.
 
@@ -611,6 +612,15 @@ def _build_step_system_prompt(
     and accumulated context from earlier steps.
     """
     parts = [base_system_prompt]
+
+    ask_user_rule = (
+        f"- You MAY call ask_user to clarify the user's intent before starting "
+        f"work. If the user does not respond, make your best guess and continue.\n"
+        if is_first_step
+        else
+        f"- Do NOT call ask_user. You are in autonomous execution mode — "
+        f"make your own best-guess decisions and keep going.\n"
+    )
 
     parts.append(
         f"\n## Current Task (Step {step.step_id})\n"
@@ -624,8 +634,7 @@ def _build_step_system_prompt(
         f"- If a search returns 0 rows, try 1-2 alternative approaches (different "
         f"LIKE patterns, COLLATE, etc.) then STOP and report what you found.\n"
         f"- Do NOT repeat the same query more than twice. Accept partial results.\n"
-        f"- Do NOT call ask_user. You are running in autonomous planner mode — "
-        f"make your own best-guess decisions and keep going.\n"
+        f"{ask_user_rule}"
         f"- When done, provide a brief summary of what you accomplished and any "
         f"key data (IDs, names, counts) you discovered."
     )
@@ -908,9 +917,10 @@ def _run_planner_stream(
             step.step_id, len(plan.steps), step.description,
         )
 
-        # Build step-scoped system prompt
+        # Build step-scoped system prompt (ask_user allowed only in first step)
         step_system_prompt = _build_step_system_prompt(
             base_system_prompt, step, previous_context,
+            is_first_step=(step_idx == 0),
         )
 
         # Execute step

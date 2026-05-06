@@ -91,23 +91,26 @@ CRITICAL RULES — read carefully:
 3. **Keep exploration compact.** Schema exploration (list_tables, \
    get_table_columns) should be combined into 1-2 steps max. The agent \
    can call multiple tools per step.
-4. **Each step = one deliverable or one clear sub-task.** A step like \
+4. **Clarification in step 1.** If the user's question is ambiguous, \
+   step 1 may use ask_user to clarify (e.g. "Which company exactly?", \
+   "What metrics?"). All subsequent steps run autonomously without asking.
+5. **Each step = one deliverable or one clear sub-task.** A step like \
    "Find company X" should also handle name variants in a single step \
    (the executor can try multiple queries). Do NOT create separate steps \
    for each name variant.
-5. **Steps that create charts or set SQL are mandatory.** If the user asks \
+6. **Steps that create charts or set SQL are mandatory.** If the user asks \
    for charts/dashboards, at least 30% of steps should be create_chart calls.
-6. **Charts MUST be saved.** Always use save_chart=true when creating charts \
+7. **Charts MUST be saved.** Always use save_chart=true when creating charts \
    so they get a permanent ID. This is required for adding them to dashboards.
-7. **Dashboard creation.** If the user asks for a dashboard, the LAST step \
+8. **Dashboard creation.** If the user asks for a dashboard, the LAST step \
    must call create_dashboard with the chart IDs from previous steps. This \
    creates a real, permanent Superset dashboard.
-8. **Graceful fallback.** If a search might fail, include the fallback \
+9. **Graceful fallback.** If a search might fail, include the fallback \
    strategy IN the same step's request (e.g. "search for X, if not found \
    try Y and Z variants"), not as separate steps.
-9. Steps may reference results from earlier steps (e.g. "use company_id=42 \
+10. Steps may reference results from earlier steps (e.g. "use company_id=42 \
    found in step 1").
-10. Return ONLY a JSON array — no markdown fences, no explanation.
+11. Return ONLY a JSON array — no markdown fences, no explanation.
 
 Output format:
 [
