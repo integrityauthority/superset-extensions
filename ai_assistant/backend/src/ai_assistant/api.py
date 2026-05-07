@@ -43,6 +43,46 @@ ai_assistant_bp = Blueprint(
 )
 
 
+def _check_auth():
+    """Check authentication via Flask-Login session OR JWT Bearer token.
+
+    Returns None if authenticated, or a (response, status_code) tuple on failure.
+    """
+    try:
+        from superset.extensions import security_manager
+
+        # 1. Check Flask-Login session (browser cookies)
+        user = security_manager.current_user
+        if user and not user.is_anonymous:
+            return None
+
+        # 2. Check JWT Bearer token (API calls)
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            try:
+                from flask_jwt_extended import decode_token
+                decoded = decode_token(token)
+                user_id = decoded.get("sub")
+                if user_id:
+                    from superset.extensions import db
+                    from superset.connectors.sqla.models import SqlaTable  # noqa: F401
+                    user_model = security_manager.user_model
+                    found_user = db.session.query(user_model).get(user_id)
+                    if found_user:
+                        # Set user in Flask-Login context for downstream use
+                        from flask_login import login_user
+                        login_user(found_user)
+                        return None
+            except Exception as jwt_ex:
+                logger.debug("JWT auth failed: %s", jwt_ex)
+
+        return jsonify({"error": "Authentication required"}), 401
+    except Exception as ex:
+        logger.warning("Could not check authentication: %s", ex)
+        return None  # fail-open if security_manager not available
+
+
 @ai_assistant_bp.route("/chat", methods=["POST"])
 def chat() -> tuple[Response, int] | Response:
     """
@@ -70,14 +110,9 @@ def chat() -> tuple[Response, int] | Response:
         "usage": {"prompt_tokens": ..., "completion_tokens": ..., "total_tokens": ...}
     }
     """
-    # Check authentication - require logged-in user
-    try:
-        from superset.extensions import security_manager
-
-        if not security_manager.current_user or security_manager.current_user.is_anonymous:
-            return jsonify({"error": "Authentication required"}), 401
-    except Exception as ex:
-        logger.warning("Could not check authentication: %s", ex)
+    auth_error = _check_auth()
+    if auth_error:
+        return auth_error
 
     data = request.get_json()
     if not data:
@@ -123,14 +158,9 @@ def chat_stream() -> tuple[Response, int] | Response:
         event: response\ndata: {"response":"...","usage":{...}}\n\n
         event: error\ndata: {"error":"..."}\n\n
     """
-    # Check authentication
-    try:
-        from superset.extensions import security_manager
-
-        if not security_manager.current_user or security_manager.current_user.is_anonymous:
-            return jsonify({"error": "Authentication required"}), 401
-    except Exception as ex:
-        logger.warning("Could not check authentication: %s", ex)
+    auth_error = _check_auth()
+    if auth_error:
+        return auth_error
 
     data = request.get_json()
     if not data:
