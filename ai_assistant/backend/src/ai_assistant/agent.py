@@ -748,6 +748,10 @@ def _run_step_tools(
                     step_chart_ids.append(tool_result["chart_id"])
                     step._chart_ids = step_chart_ids  # type: ignore[attr-defined]
 
+                # Track if a dashboard was created
+                if tool_result.get("dashboard_id"):
+                    step._dashboard_created = True  # type: ignore[attr-defined]
+
                 # Keep a compact snippet for the checker (first 500 chars of result)
                 snippet = json.dumps(tool_result, default=str)[:500]
                 last_context_snippet = snippet
@@ -1041,11 +1045,13 @@ def _run_planner_stream(
         kw in user_question.lower()
         for kw in ("dashboard", "dashboardot", "műszerfal", "irányítópult")
     )
-    dashboard_was_created = any(
-        "dashboard_url" in (ctx.get("summary") or "")
-        or "create_dashboard" in (ctx.get("summary") or "")
-        or "Dashboard created" in (ctx.get("summary") or "")
-        for ctx in previous_context
+    dashboard_was_created = (
+        any(getattr(s, "_dashboard_created", False) for s in plan.steps)
+        or any(
+            "dashboard_url" in (ctx.get("summary") or "")
+            or "Dashboard created" in (ctx.get("summary") or "")
+            for ctx in previous_context
+        )
     )
     if dashboard_keywords and not dashboard_was_created:
         # Collect chart IDs from step objects (most reliable)
