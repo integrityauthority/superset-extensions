@@ -772,6 +772,20 @@ def _run_step_tools(
                             "data": {"type": tool_name, **tool_args},
                         }
 
+                # ask_user: STOP step execution — the frontend will show the
+                # question card and send the user's answer as a new request.
+                # The planner stream must end so the SSE connection closes and
+                # the frontend can submit the follow-up.
+                if tool_name == "ask_user":
+                    logger.info("  ask_user called — halting step, waiting for user reply")
+                    step.result_summary = f"Asked user: {tool_args.get('question', '?')[:100]}"
+                    step.context_snippet = snippet
+                    yield {
+                        "event": "_ask_user_halt",
+                        "data": {"question": tool_args.get("question", "")},
+                    }
+                    return
+
                 tool_result_str = json.dumps(tool_result, default=str)
                 llm_messages.append({
                     "role": "tool",
@@ -941,6 +955,7 @@ def _run_planner_stream(
         # Execute step
         step_error = None
         step_summary = ""
+        ask_user_halt = False
 
         for evt in _run_step_tools(
             step=step,
@@ -960,9 +975,33 @@ def _run_planner_stream(
             elif evt["event"] == "_step_error":
                 step_error = evt["data"].get("error", "Unknown error")
                 break
+            elif evt["event"] == "_ask_user_halt":
+                ask_user_halt = True
+                break
             else:
                 # Pass through step/action events to the frontend
                 yield evt
+
+        # ask_user halt: end the entire planner stream. The frontend will
+        # display the question card, and the user's answer comes as a new
+        # request. The new request will re-plan from scratch with the
+        # user's clarification included in the conversation history.
+        if ask_user_halt:
+            step.status = "done"
+            yield {
+                "event": "action",
+                "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
+            }
+            # Send a minimal response so the stream closes properly.
+            # The frontend shows the ask_user card for the actual interaction.
+            yield {
+                "event": "response",
+                "data": {
+                    "response": "Kérem válaszoljon a fenti kérdésre, hogy folytathassam a munkát.",
+                    "usage": total_usage,
+                },
+            }
+            return
 
         if step_error:
             step.status = "error"
