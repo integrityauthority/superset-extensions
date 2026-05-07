@@ -1043,7 +1043,9 @@ def _run_planner_stream(
             + "\n".join(summary_parts) +
             f"\n\nProvide a clear, complete summary for the user. "
             f"Include key findings, any SQL queries that were set in the editor, "
-            f"and any charts that were created."
+            f"and any charts that were created. "
+            f"If a dashboard was created, include its direct link as a Markdown link "
+            f"so the user can click it (e.g. [Dashboard title](/superset/dashboard/ID/))."
         )},
     ]
 
@@ -1109,6 +1111,9 @@ def _summarize_result(result: dict[str, Any]) -> str:
     # Update results (dataset or chart)
     if "changes" in result and "message" in result:
         return f"{result['message']}: {len(result['changes'])} change(s)"
+
+    if "dashboard_url" in result:
+        return f"Dashboard created: {result.get('dashboard_title', '?')} — URL: {result['dashboard_url']}"
 
     if "data" in result:
         return f"{result.get('row_count', '?')} rows returned"

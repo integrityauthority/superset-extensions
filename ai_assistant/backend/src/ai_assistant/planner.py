@@ -105,12 +105,15 @@ CRITICAL RULES — read carefully:
 8. **Dashboard creation.** If the user asks for a dashboard, the LAST step \
    must call create_dashboard with the chart IDs from previous steps. This \
    creates a real, permanent Superset dashboard.
-9. **Graceful fallback.** If a search might fail, include the fallback \
+9. **Naming convention.** All AI-created resources (datasets, charts, \
+   dashboards) are automatically named with the pattern ai_YYYYMMDD_HHMM_Topic. \
+   You don't need to add this prefix yourself — the backend does it automatically.
+10. **Graceful fallback.** If a search might fail, include the fallback \
    strategy IN the same step's request (e.g. "search for X, if not found \
    try Y and Z variants"), not as separate steps.
-10. Steps may reference results from earlier steps (e.g. "use company_id=42 \
+11. Steps may reference results from earlier steps (e.g. "use company_id=42 \
    found in step 1").
-11. Return ONLY a JSON array — no markdown fences, no explanation.
+12. Return ONLY a JSON array — no markdown fences, no explanation.
 
 Output format:
 [

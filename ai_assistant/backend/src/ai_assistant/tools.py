@@ -27,6 +27,8 @@ security permissions and row-level security.
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime
 from typing import Any
 
 from superset.connectors.sqla.models import SqlaTable
@@ -35,6 +37,15 @@ from superset.models.core import Database
 from superset.sql.parse import Table
 
 logger = logging.getLogger(__name__)
+
+
+def _ai_resource_name(topic: str) -> str:
+    """Generate a standardised AI resource name: ai_YYYYMMDD_HHMM_Topic."""
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    # Keep only alphanumeric, spaces, hyphens, underscores; then convert spaces to _
+    safe = re.sub(r"[^\w\s-]", "", topic).strip()
+    safe = re.sub(r"\s+", "_", safe)[:60]
+    return f"ai_{ts}_{safe}"
 
 
 def _get_superset_dataset_metadata(
@@ -1565,8 +1576,8 @@ def tool_create_chart(
 ) -> dict[str, Any]:
     """Create a chart from a SQL query and return an explore URL."""
     try:
-        # Sanitize dataset name from chart name
-        safe_name = f"ai_{chart_name.replace(' ', '_')[:80]}"
+        # Standardised AI naming: ai_YYYYMMDD_HHMM_Topic
+        safe_name = _ai_resource_name(chart_name)
 
         # MSSQL: strip ORDER BY from virtual dataset SQL — MSSQL disallows
         # ORDER BY in subqueries/derived tables unless TOP/OFFSET is present,
@@ -1602,9 +1613,14 @@ def tool_create_chart(
             from superset.commands.chart.create import CreateChartCommand
             from superset.utils import json as superset_json
 
+            # Enforce naming convention on saved charts
+            saved_chart_name = (
+                chart_name if chart_name.startswith("ai_")
+                else _ai_resource_name(chart_name)
+            )
             chart = CreateChartCommand(
                 {
-                    "slice_name": chart_name,
+                    "slice_name": saved_chart_name,
                     "viz_type": form_data["viz_type"],
                     "datasource_id": dataset_id_val,
                     "datasource_type": "table",
@@ -1614,7 +1630,7 @@ def tool_create_chart(
             explore_url = f"/explore/?slice_id={chart.id}"
             logger.info(
                 "Saved chart: id=%s, name=%s, url=%s",
-                chart.id, chart_name, explore_url,
+                chart.id, saved_chart_name, explore_url,
             )
         else:
             explore_url = _generate_explore_url(dataset_id_val, form_data)
@@ -1623,13 +1639,17 @@ def tool_create_chart(
                 chart_name, explore_url,
             )
 
-        return {
+        result_data: dict[str, Any] = {
             "action": "open_chart",
             "url": explore_url,
-            "chart_name": chart_name,
+            "chart_name": saved_chart_name if save_chart else chart_name,
+            "dataset_name": safe_name,
             "viz_type": viz_type,
             "saved": save_chart,
         }
+        if save_chart:
+            result_data["chart_id"] = chart.id
+        return result_data
 
     except Exception as ex:
         logger.error("Error creating chart '%s': %s", chart_name, ex, exc_info=True)
@@ -1646,42 +1666,69 @@ def tool_create_dashboard(
         from superset.commands.dashboard.create import CreateDashboardCommand
         from superset.utils import json as superset_json
 
-        # Build a simple grid layout — 2 columns, each chart 6 units wide
+        # Enforce naming convention
+        final_title = (
+            dashboard_title if dashboard_title.startswith("ai_")
+            else _ai_resource_name(dashboard_title)
+        )
+
+        # Build v2 grid layout — 2 charts per row, 6 units wide each
         position_json: dict[str, Any] = {
             "DASHBOARD_VERSION_KEY": "v2",
             "ROOT_ID": {"type": "ROOT", "id": "ROOT_ID", "children": ["GRID_ID"]},
-            "GRID_ID": {"type": "GRID", "id": "GRID_ID", "children": [], "parents": ["ROOT_ID"]},
-            "HEADER_ID": {"type": "HEADER", "id": "HEADER_ID", "meta": {"text": dashboard_title}},
+            "GRID_ID": {"type": "GRID", "id": "GRID_ID", "children": []},
+            "HEADER_ID": {"type": "HEADER", "id": "HEADER_ID", "meta": {"text": final_title}},
         }
 
-        row_children: list[str] = []
+        # Resolve chart slice names for better labels
+        chart_names: dict[int, str] = {}
+        try:
+            from superset.models.slice import Slice
+            for cid in chart_ids:
+                s = db.session.query(Slice).filter_by(id=cid).first()
+                if s:
+                    chart_names[cid] = s.slice_name
+        except Exception:
+            pass
+
         for idx, chart_id in enumerate(chart_ids):
+            row_idx = idx // 2
+            row_key = f"ROW-ai-{row_idx}"
             chart_key = f"CHART-ai-{idx}"
-            row_key = f"ROW-ai-{idx}"
+
+            # Create ROW only for the first chart in each pair
+            if row_key not in position_json:
+                position_json[row_key] = {
+                    "type": "ROW",
+                    "id": row_key,
+                    "children": [],
+                    "meta": {"background": "BACKGROUND_TRANSPARENT"},
+                }
+                position_json["GRID_ID"]["children"].append(row_key)
 
             position_json[chart_key] = {
                 "type": "CHART",
                 "id": chart_key,
                 "children": [],
-                "parents": ["ROOT_ID", "GRID_ID", row_key],
                 "meta": {
                     "chartId": chart_id,
                     "width": 6,
                     "height": 50,
-                    "sliceName": f"Chart {idx + 1}",
+                    "sliceName": chart_names.get(chart_id, f"Chart {idx + 1}"),
                 },
             }
-            position_json[row_key] = {
-                "type": "ROW",
-                "id": row_key,
-                "children": [chart_key],
-                "parents": ["ROOT_ID", "GRID_ID"],
-            }
-            position_json["GRID_ID"]["children"].append(row_key)
+            position_json[row_key]["children"].append(chart_key)
 
         payload: dict[str, Any] = {
-            "dashboard_title": dashboard_title,
+            "dashboard_title": final_title,
             "position_json": superset_json.dumps(position_json),
+            "json_metadata": superset_json.dumps({
+                "default_filters": "{}",
+                "expanded_slices": {},
+                "refresh_frequency": 0,
+                "timed_refresh_immune_slices": [],
+                "color_scheme": "",
+            }),
         }
         if description:
             payload["description"] = description
@@ -1692,12 +1739,13 @@ def tool_create_dashboard(
         dashboard_url = f"/superset/dashboard/{dashboard.id}/"
         logger.info(
             "Created dashboard: id=%s, title=%s, charts=%s, url=%s",
-            dashboard.id, dashboard_title, chart_ids, dashboard_url,
+            dashboard.id, final_title, chart_ids, dashboard_url,
         )
 
         return {
+            "action": "open_dashboard",
             "dashboard_id": dashboard.id,
-            "dashboard_title": dashboard_title,
+            "dashboard_title": final_title,
             "dashboard_url": dashboard_url,
             "chart_count": len(chart_ids),
         }
@@ -1715,7 +1763,7 @@ def tool_create_dashboard(
 FRONTEND_ACTIONS: set[str] = {"ask_user", "update_todo"}
 
 # Tools whose results contain actions to relay to the frontend
-TOOLS_WITH_ACTIONS = {"set_editor_sql", "create_chart", "ask_user", "update_todo"}
+TOOLS_WITH_ACTIONS = {"set_editor_sql", "create_chart", "create_dashboard", "ask_user", "update_todo"}
 
 
 def execute_tool(
