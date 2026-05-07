@@ -614,16 +614,11 @@ def _build_step_system_prompt(
     """
     parts = [base_system_prompt]
 
+    # Planner mode is always fully autonomous — no ask_user available.
+    # The tool is not even in the tool list, but reinforce in prompt.
     ask_user_rule = (
-        f"- IMPORTANT: You SHOULD call ask_user FIRST to clarify ambiguous "
-        f"aspects of the request (metrics, time range, chart types, etc.) "
-        f"BEFORE doing any schema exploration or SQL work. This is your ONLY "
-        f"chance to ask — all later steps are autonomous. If the request is "
-        f"crystal clear, skip ask_user and proceed directly.\n"
-        if is_first_step
-        else
-        f"- Do NOT call ask_user. You are in autonomous execution mode — "
-        f"make your own best-guess decisions and keep going.\n"
+        f"- You are in AUTONOMOUS execution mode. Make your best-guess "
+        f"decisions and keep going. Do NOT ask questions — just deliver results.\n"
     )
 
     parts.append(
@@ -682,6 +677,14 @@ def _run_step_tools(
         )},
     ]
 
+    # In planner mode, remove ask_user from available tools — it breaks the
+    # plan execution loop because the frontend sends the answer as a new
+    # message which triggers a brand new plan instead of continuing.
+    planner_tools = [
+        t for t in TOOL_DEFINITIONS
+        if t.get("function", {}).get("name") != "ask_user"
+    ]
+
     # Limit per-step rounds — keep steps focused and efficient
     step_max_rounds = min(max_rounds, 8)
 
@@ -696,7 +699,7 @@ def _run_step_tools(
                 provider_config=provider_config,
                 provider=provider,
                 messages=llm_messages,
-                tools=TOOL_DEFINITIONS,
+                tools=planner_tools,
             )
         except Exception as ex:
             logger.error("LLM error in step %s round %d: %s", step.step_id, round_num + 1, ex)
@@ -771,20 +774,6 @@ def _run_step_tools(
                             "event": "action",
                             "data": {"type": tool_name, **tool_args},
                         }
-
-                # ask_user: STOP step execution — the frontend will show the
-                # question card and send the user's answer as a new request.
-                # The planner stream must end so the SSE connection closes and
-                # the frontend can submit the follow-up.
-                if tool_name == "ask_user":
-                    logger.info("  ask_user called — halting step, waiting for user reply")
-                    step.result_summary = f"Asked user: {tool_args.get('question', '?')[:100]}"
-                    step.context_snippet = snippet
-                    yield {
-                        "event": "_ask_user_halt",
-                        "data": {"question": tool_args.get("question", "")},
-                    }
-                    return
 
                 tool_result_str = json.dumps(tool_result, default=str)
                 llm_messages.append({
@@ -955,7 +944,6 @@ def _run_planner_stream(
         # Execute step
         step_error = None
         step_summary = ""
-        ask_user_halt = False
 
         for evt in _run_step_tools(
             step=step,
@@ -975,33 +963,9 @@ def _run_planner_stream(
             elif evt["event"] == "_step_error":
                 step_error = evt["data"].get("error", "Unknown error")
                 break
-            elif evt["event"] == "_ask_user_halt":
-                ask_user_halt = True
-                break
             else:
                 # Pass through step/action events to the frontend
                 yield evt
-
-        # ask_user halt: end the entire planner stream. The frontend will
-        # display the question card, and the user's answer comes as a new
-        # request. The new request will re-plan from scratch with the
-        # user's clarification included in the conversation history.
-        if ask_user_halt:
-            step.status = "done"
-            yield {
-                "event": "action",
-                "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
-            }
-            # Send a minimal response so the stream closes properly.
-            # The frontend shows the ask_user card for the actual interaction.
-            yield {
-                "event": "response",
-                "data": {
-                    "response": "Kérem válaszoljon a fenti kérdésre, hogy folytathassam a munkát.",
-                    "usage": total_usage,
-                },
-            }
-            return
 
         if step_error:
             step.status = "error"
