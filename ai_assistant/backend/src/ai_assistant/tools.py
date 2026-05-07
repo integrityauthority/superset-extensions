@@ -1561,6 +1561,80 @@ def _generate_explore_url(
     return f"/explore/?form_data_key={form_data_key}"
 
 
+def _validate_chart_sql(
+    database_id: int,
+    sql: str,
+    schema_name: str | None = None,
+    catalog: str | None = None,
+) -> dict[str, Any] | None:
+    """Validate chart SQL by executing it with TOP 1 / LIMIT 1.
+
+    Returns None on success.  On failure returns an error dict that includes
+    the DB error AND the column list of any tables referenced, so the LLM
+    can self-correct without extra tool calls.
+    """
+    try:
+        database = _get_database(database_id)
+        db_backend = database.backend.lower() if database.backend else ""
+        if "mssql" in db_backend:
+            validation_sql = f"SELECT TOP 1 * FROM ({sql}) AS _val"
+        else:
+            validation_sql = f"SELECT * FROM ({sql}) AS _val LIMIT 1"
+
+        from superset_core.queries.types import QueryOptions
+        options = QueryOptions(catalog=catalog, schema=schema_name, limit=1)
+        database.execute(validation_sql, options)
+        return None  # success
+    except Exception as ex:
+        error_msg = str(ex)
+        logger.warning("create_chart SQL validation FAILED: %s", error_msg[:300])
+
+        # Try to extract referenced table names and return their columns
+        hint_lines: list[str] = []
+        table_refs = _extract_table_refs(sql)
+        if table_refs:
+            for tbl in table_refs[:4]:  # max 4 tables
+                try:
+                    cols = tool_get_table_columns(
+                        database_id, tbl, schema_name or "dbo", catalog
+                    )
+                    if "columns" in cols:
+                        col_names = [c["name"] for c in cols["columns"]]
+                        hint_lines.append(f"  {tbl}: {', '.join(col_names)}")
+                except Exception:
+                    pass
+
+        hint = ""
+        if hint_lines:
+            hint = (
+                "\n\nAvailable columns in referenced tables:\n"
+                + "\n".join(hint_lines)
+                + "\n\nFix the column names and call create_chart again."
+            )
+
+        return {
+            "error": (
+                f"SQL validation failed — chart NOT created. "
+                f"DB error: {error_msg}{hint}"
+            )
+        }
+
+
+def _extract_table_refs(sql: str) -> list[str]:
+    """Best-effort extraction of table/view names from SQL (FROM / JOIN)."""
+    pattern = r'(?:FROM|JOIN)\s+(?:\[?dbo\]?\.)?\[?(\w+)\]?'
+    matches = re.findall(pattern, sql, re.IGNORECASE)
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    result: list[str] = []
+    for m in matches:
+        low = m.lower()
+        if low not in seen and low not in ("select", "as", "on", "where"):
+            seen.add(low)
+            result.append(m)
+    return result
+
+
 def tool_create_chart(
     database_id: int,
     sql: str,
@@ -1576,6 +1650,13 @@ def tool_create_chart(
 ) -> dict[str, Any]:
     """Create a chart from a SQL query and return an explore URL."""
     try:
+        # --- Pre-validate SQL BEFORE doing anything expensive ---
+        validation_error = _validate_chart_sql(
+            database_id, sql, schema_name, catalog
+        )
+        if validation_error:
+            return validation_error
+
         # Standardised AI naming: ai_YYYYMMDD_HHMM_Topic
         safe_name = _ai_resource_name(chart_name)
 
