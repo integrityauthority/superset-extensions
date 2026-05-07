@@ -1650,16 +1650,6 @@ def tool_create_chart(
 ) -> dict[str, Any]:
     """Create a chart from a SQL query and return an explore URL."""
     try:
-        # --- Pre-validate SQL BEFORE doing anything expensive ---
-        validation_error = _validate_chart_sql(
-            database_id, sql, schema_name, catalog
-        )
-        if validation_error:
-            return validation_error
-
-        # Standardised AI naming: ai_YYYYMMDD_HHMM_Topic
-        safe_name = _ai_resource_name(chart_name)
-
         # MSSQL: strip ORDER BY from virtual dataset SQL — MSSQL disallows
         # ORDER BY in subqueries/derived tables unless TOP/OFFSET is present,
         # and Superset wraps virtual dataset SQL in a subquery for charting.
@@ -1670,6 +1660,18 @@ def tool_create_chart(
                 logger.info(
                     "Stripped ORDER BY from chart SQL for MSSQL compatibility"
                 )
+
+        # Pre-validate the FINAL SQL (after ORDER BY stripping) before
+        # creating a dataset — catches column errors early and returns
+        # available column names for self-correction.
+        validation_error = _validate_chart_sql(
+            database_id, dataset_sql, schema_name, catalog
+        )
+        if validation_error:
+            return validation_error
+
+        # Standardised AI naming: ai_YYYYMMDD_HHMM_Topic
+        safe_name = _ai_resource_name(chart_name)
 
         # Step 1: Try to find existing dataset, else create virtual one
         dataset = _find_existing_dataset(database_id, safe_name, schema_name)
