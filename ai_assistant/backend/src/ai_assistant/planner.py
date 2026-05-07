@@ -91,9 +91,12 @@ CRITICAL RULES — read carefully:
 3. **Keep exploration compact.** Schema exploration (list_tables, \
    get_table_columns) should be combined into 1-2 steps max. The agent \
    can call multiple tools per step.
-4. **Clarification in step 1.** If the user's question is ambiguous, \
-   step 1 may use ask_user to clarify (e.g. "Which company exactly?", \
-   "What metrics?"). All subsequent steps run autonomously without asking.
+4. **Clarification in step 1 is ENCOURAGED.** Step 1 should use ask_user \
+   to clarify ambiguities BEFORE doing any real work (e.g. "Which specific \
+   metrics? Revenue vs. profit?", "What time range?", "Which visualization \
+   types?"). This avoids wasting steps on wrong assumptions. All subsequent \
+   steps run autonomously without asking — so step 1 is the ONLY chance to \
+   clarify. If the question is clear, skip ask_user and proceed.
 5. **Each step = one deliverable or one clear sub-task.** A step like \
    "Find company X" should also handle name variants in a single step \
    (the executor can try multiple queries). Do NOT create separate steps \
@@ -102,9 +105,11 @@ CRITICAL RULES — read carefully:
    for charts/dashboards, at least 30% of steps should be create_chart calls.
 7. **Charts MUST be saved.** Always use save_chart=true when creating charts \
    so they get a permanent ID. This is required for adding them to dashboards.
-8. **Dashboard creation.** If the user asks for a dashboard, the LAST step \
-   must call create_dashboard with the chart IDs from previous steps. This \
-   creates a real, permanent Superset dashboard.
+8. **Dashboard creation is MANDATORY.** If the user asks for a dashboard, \
+   the LAST step MUST call create_dashboard with chart IDs collected from \
+   previous steps. This is NON-NEGOTIABLE. A task that creates charts but \
+   skips the dashboard step is a FAILURE. The create_dashboard step should \
+   reference all chart_id values returned by earlier create_chart steps.
 9. **Naming convention.** All AI-created resources (datasets, charts, \
    dashboards) are automatically named with the pattern ai_YYYYMMDD_HHMM_Topic. \
    You don't need to add this prefix yourself — the backend does it automatically.
@@ -159,6 +164,11 @@ Your job is MINIMAL and CONSERVATIVE:
 
 7. step_id values MUST be integers. Use existing step_id for updates, or the \
    next sequential integer for new steps.
+
+8. **Dashboard safety net.** If the user originally asked for a dashboard, \
+   and you see that chart_ids have been created (check result summaries for \
+   chart_id values), but there is NO remaining create_dashboard step in the \
+   plan — you MUST add one. This is the most common failure mode.
 
 Return ONLY the JSON array — no markdown, no explanation.
 """

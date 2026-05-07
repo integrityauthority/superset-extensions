@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from ai_assistant.config import get_ai_config, get_provider_config
@@ -614,8 +615,11 @@ def _build_step_system_prompt(
     parts = [base_system_prompt]
 
     ask_user_rule = (
-        f"- You MAY call ask_user to clarify the user's intent before starting "
-        f"work. If the user does not respond, make your best guess and continue.\n"
+        f"- IMPORTANT: You SHOULD call ask_user FIRST to clarify ambiguous "
+        f"aspects of the request (metrics, time range, chart types, etc.) "
+        f"BEFORE doing any schema exploration or SQL work. This is your ONLY "
+        f"chance to ask — all later steps are autonomous. If the request is "
+        f"crystal clear, skip ask_user and proceed directly.\n"
         if is_first_step
         else
         f"- Do NOT call ask_user. You are in autonomous execution mode — "
@@ -630,10 +634,15 @@ def _build_step_system_prompt(
         f"RULES FOR THIS STEP:\n"
         f"- Focus ONLY on this step. Do NOT work on future steps.\n"
         f"- Be efficient: call get_table_columns BEFORE writing SQL so you use "
-        f"correct column names.\n"
+        f"correct column names. NEVER guess column names.\n"
         f"- If a search returns 0 rows, try 1-2 alternative approaches (different "
         f"LIKE patterns, COLLATE, etc.) then STOP and report what you found.\n"
         f"- Do NOT repeat the same query more than twice. Accept partial results.\n"
+        f"- PREFER create_chart over set_editor_sql when the step requires creating "
+        f"a chart or visualization. Only use set_editor_sql when the step is "
+        f"specifically about placing a query in the editor (not for chart creation).\n"
+        f"- Do NOT call set_editor_sql as a way to 'test' a query — use execute_sql "
+        f"for testing. set_editor_sql is ONLY for the final user-facing query.\n"
         f"{ask_user_rule}"
         f"- When done, provide a brief summary of what you accomplished and any "
         f"key data (IDs, names, counts) you discovered."
@@ -703,6 +712,7 @@ def _run_step_tools(
 
             last_result_summary = ""
             last_context_snippet = ""
+            step_chart_ids: list[int] = getattr(step, "_chart_ids", [])
 
             for tool_call in tool_calls:
                 func = tool_call["function"]
@@ -729,6 +739,11 @@ def _run_step_tools(
 
                 summary = _summarize_result(tool_result)
                 last_result_summary = summary
+
+                # Track chart_ids for dashboard safety net
+                if tool_result.get("chart_id"):
+                    step_chart_ids.append(tool_result["chart_id"])
+                    step._chart_ids = step_chart_ids  # type: ignore[attr-defined]
 
                 # Keep a compact snippet for the checker (first 500 chars of result)
                 snippet = json.dumps(tool_result, default=str)[:500]
@@ -1016,6 +1031,69 @@ def _run_planner_stream(
             logger.warning("Planner: checker failed for step %s: %s", step.step_id, ex)
 
         step_idx += 1
+
+    # --- Phase 3b: Dashboard safety net ---
+    # If user asked for a dashboard but no create_dashboard was called, do it now
+    dashboard_keywords = any(
+        kw in user_question.lower()
+        for kw in ("dashboard", "dashboardot", "műszerfal", "irányítópult")
+    )
+    dashboard_was_created = any(
+        "dashboard_url" in (ctx.get("summary") or "")
+        or "create_dashboard" in (ctx.get("summary") or "")
+        or "Dashboard created" in (ctx.get("summary") or "")
+        for ctx in previous_context
+    )
+    if dashboard_keywords and not dashboard_was_created:
+        # Collect chart IDs from step objects (most reliable)
+        collected_chart_ids: list[int] = []
+        for s in plan.steps:
+            for cid in getattr(s, "_chart_ids", []):
+                if cid not in collected_chart_ids:
+                    collected_chart_ids.append(cid)
+        # Fallback: parse from context summaries
+        if not collected_chart_ids:
+            for ctx in previous_context:
+                summary_text = ctx.get("summary") or ""
+                for match in re.findall(r"chart_id[\"']?\s*[:=]\s*(\d+)", summary_text):
+                    cid = int(match)
+                    if cid not in collected_chart_ids:
+                        collected_chart_ids.append(cid)
+
+        if collected_chart_ids:
+            logger.info(
+                "Planner: dashboard safety net — creating dashboard with chart IDs: %s",
+                collected_chart_ids,
+            )
+            from ai_assistant.tools import tool_create_dashboard
+            dash_result = tool_create_dashboard(
+                chart_ids=collected_chart_ids,
+                dashboard_title=user_question[:80],
+            )
+            dash_summary = _summarize_result(dash_result)
+            previous_context.append({
+                "step_id": "auto",
+                "description": "Auto-created dashboard (safety net)",
+                "summary": dash_summary,
+            })
+            # Emit dashboard action
+            if "error" not in dash_result and "action" in dash_result:
+                action_data = {**dash_result}
+                action_data["type"] = action_data.pop("action")
+                yield {"event": "action", "data": action_data}
+            yield {
+                "event": "step",
+                "data": {
+                    "type": "tool_call",
+                    "tool": "create_dashboard",
+                    "args": {"chart_ids": collected_chart_ids},
+                    "result_summary": dash_summary,
+                },
+            }
+        else:
+            logger.warning(
+                "Planner: dashboard safety net — user wanted dashboard but no chart IDs found"
+            )
 
     # --- Phase 4: Final summary ---
     logger.info("Planner: all steps done, generating summary")
