@@ -30,6 +30,7 @@ from typing import Generator
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
+from ai_assistant import __version__
 from ai_assistant.agent import run_agent, run_agent_stream
 from ai_assistant.config import get_ai_config, get_provider_config
 
@@ -40,6 +41,46 @@ ai_assistant_bp = Blueprint(
     __name__,
     url_prefix="/api/v1/ai_assistant",
 )
+
+
+def _check_auth():
+    """Check authentication via Flask-Login session OR JWT Bearer token.
+
+    Returns None if authenticated, or a (response, status_code) tuple on failure.
+    """
+    try:
+        from superset.extensions import security_manager
+
+        # 1. Check Flask-Login session (browser cookies)
+        user = security_manager.current_user
+        if user and not user.is_anonymous:
+            return None
+
+        # 2. Check JWT Bearer token (API calls)
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            try:
+                from flask_jwt_extended import decode_token
+                decoded = decode_token(token)
+                user_id = decoded.get("sub")
+                if user_id:
+                    from superset.extensions import db
+                    from superset.connectors.sqla.models import SqlaTable  # noqa: F401
+                    user_model = security_manager.user_model
+                    found_user = db.session.query(user_model).get(user_id)
+                    if found_user:
+                        # Set user in Flask-Login context for downstream use
+                        from flask_login import login_user
+                        login_user(found_user)
+                        return None
+            except Exception as jwt_ex:
+                logger.debug("JWT auth failed: %s", jwt_ex)
+
+        return jsonify({"error": "Authentication required"}), 401
+    except Exception as ex:
+        logger.warning("Could not check authentication: %s", ex)
+        return None  # fail-open if security_manager not available
 
 
 @ai_assistant_bp.route("/chat", methods=["POST"])
@@ -69,14 +110,9 @@ def chat() -> tuple[Response, int] | Response:
         "usage": {"prompt_tokens": ..., "completion_tokens": ..., "total_tokens": ...}
     }
     """
-    # Check authentication - require logged-in user
-    try:
-        from superset.extensions import security_manager
-
-        if not security_manager.current_user or security_manager.current_user.is_anonymous:
-            return jsonify({"error": "Authentication required"}), 401
-    except Exception as ex:
-        logger.warning("Could not check authentication: %s", ex)
+    auth_error = _check_auth()
+    if auth_error:
+        return auth_error
 
     data = request.get_json()
     if not data:
@@ -94,6 +130,8 @@ def chat() -> tuple[Response, int] | Response:
     model_override = context.get("model_override")
     provider_override = context.get("provider_override")
 
+    plan_state = data.get("plan_state")
+
     try:
         result = run_agent(
             messages=messages,
@@ -104,6 +142,7 @@ def chat() -> tuple[Response, int] | Response:
             current_sql=context.get("current_sql"),
             model_override=model_override,
             provider_override=provider_override,
+            plan_state=plan_state,
         )
         return jsonify(result)
     except Exception as ex:
@@ -122,14 +161,9 @@ def chat_stream() -> tuple[Response, int] | Response:
         event: response\ndata: {"response":"...","usage":{...}}\n\n
         event: error\ndata: {"error":"..."}\n\n
     """
-    # Check authentication
-    try:
-        from superset.extensions import security_manager
-
-        if not security_manager.current_user or security_manager.current_user.is_anonymous:
-            return jsonify({"error": "Authentication required"}), 401
-    except Exception as ex:
-        logger.warning("Could not check authentication: %s", ex)
+    auth_error = _check_auth()
+    if auth_error:
+        return auth_error
 
     data = request.get_json()
     if not data:
@@ -146,6 +180,7 @@ def chat_stream() -> tuple[Response, int] | Response:
 
     model_override = context.get("model_override")
     provider_override = context.get("provider_override")
+    plan_state = data.get("plan_state")
 
     def generate() -> Generator[str, None, None]:
         try:
@@ -158,6 +193,7 @@ def chat_stream() -> tuple[Response, int] | Response:
                 current_sql=context.get("current_sql"),
                 model_override=model_override,
                 provider_override=provider_override,
+                plan_state=plan_state,
             ):
                 event_type = event["event"]
                 event_data = json.dumps(event["data"], default=str)
@@ -274,27 +310,95 @@ def list_models() -> tuple[Response, int] | Response:
 
 @ai_assistant_bp.route("/health", methods=["GET"])
 def health() -> tuple[Response, int] | Response:
-    """Health check endpoint for the Vambery AI Agent extension."""
+    """Health check endpoint for the Vambery AI Agent extension.
+
+    Returns detailed status including dependency checks and LLM connectivity.
+    Pass ?quick=1 to skip the connectivity check (faster, config-only).
+    """
+    checks: dict[str, object] = {
+        "version": __version__,
+    }
+    errors: list[str] = []
+
+    # 1. Check Python dependencies
+    try:
+        import openai  # noqa: F401
+        checks["dependency_openai"] = True
+    except ImportError:
+        checks["dependency_openai"] = False
+        errors.append("Python package 'openai' is not installed (pip install openai)")
+
+    # 2. Check config
     try:
         config = get_ai_config()
         provider = config.get("provider", "unknown")
+        checks["provider"] = provider
         provider_config = config.get(provider, {})
-        if provider == "ollama":
-            configured = bool(provider_config.get("base_url"))
-        else:
-            has_key = bool(provider_config.get("api_key"))
-            has_ep = bool(
-                provider_config.get("azure_endpoint")
-                or provider_config.get("base_url")
-            )
-            configured = has_key and has_ep
 
-        return jsonify(
-            {
-                "status": "ok",
-                "provider": provider,
-                "configured": configured,
-            }
-        )
+        if provider == "ollama":
+            checks["config_ok"] = bool(provider_config.get("base_url"))
+            if not checks["config_ok"]:
+                errors.append("Ollama base_url is not configured")
+        elif provider == "azure_openai":
+            has_key = bool(provider_config.get("api_key"))
+            has_ep = bool(provider_config.get("azure_endpoint"))
+            checks["config_ok"] = has_key and has_ep
+            if not has_key:
+                errors.append("Azure OpenAI API key is not configured")
+            if not has_ep:
+                errors.append("Azure OpenAI endpoint is not configured")
+        elif provider == "openai":
+            checks["config_ok"] = bool(provider_config.get("api_key"))
+            if not checks["config_ok"]:
+                errors.append("OpenAI API key is not configured")
+        else:
+            checks["config_ok"] = False
+            errors.append(f"Unknown provider: {provider}")
     except Exception as ex:
-        return jsonify({"status": "error", "error": str(ex)}), 500
+        checks["config_ok"] = False
+        errors.append(f"Config error: {ex}")
+        provider = "unknown"
+        provider_config = {}
+
+    # 3. Connectivity check (skip with ?quick=1)
+    skip_connectivity = request.args.get("quick") == "1"
+    if skip_connectivity:
+        checks["connectivity"] = "skipped"
+    elif checks.get("dependency_openai") and checks.get("config_ok"):
+        try:
+            if provider == "ollama":
+                import urllib.request
+                base_url = provider_config.get("base_url", "").rstrip("/")
+                req = urllib.request.Request(
+                    f"{base_url}/api/tags", method="GET"
+                )
+                req.add_header("Connection", "close")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    checks["connectivity"] = resp.status == 200
+                    if not checks["connectivity"]:
+                        errors.append(f"Ollama returned HTTP {resp.status}")
+            elif provider == "azure_openai":
+                import urllib.request
+                endpoint = provider_config.get("azure_endpoint", "").rstrip("/")
+                req = urllib.request.Request(endpoint, method="GET")
+                req.add_header("Connection", "close")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    checks["connectivity"] = True
+            elif provider == "openai":
+                checks["connectivity"] = True  # no simple ping for OpenAI
+        except Exception as ex:
+            checks["connectivity"] = False
+            errors.append(f"Cannot reach {provider}: {ex}")
+
+    # Build response
+    all_ok = (
+        checks.get("dependency_openai") is True
+        and checks.get("config_ok") is True
+        and checks.get("connectivity") is not False
+    )
+    checks["status"] = "ok" if all_ok else "degraded"
+    if errors:
+        checks["errors"] = errors
+
+    status_code = 200 if all_ok else 503
+    return jsonify(checks), status_code

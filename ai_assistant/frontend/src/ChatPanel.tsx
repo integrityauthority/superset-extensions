@@ -46,6 +46,7 @@ interface ChatMessage {
   actions?: EditorAction[];
   error?: boolean;
   hasRunnable?: boolean;
+  planState?: Record<string, unknown>;
 }
 
 interface AgentStep {
@@ -111,13 +112,20 @@ interface StreamEvent {
 /**
  * Post a chat message and stream SSE events back.
  * Calls onEvent for each parsed SSE event as it arrives.
+ * If planState is provided, the backend resumes the existing plan.
  */
 async function postChatStream(
   messages: { role: string; content: string }[],
   context: ChatContext,
-  onEvent: (evt: StreamEvent) => void
+  onEvent: (evt: StreamEvent) => void,
+  planState?: Record<string, unknown>
 ): Promise<void> {
   const csrfToken = await authentication.getCSRFToken();
+
+  const body: Record<string, unknown> = { messages, context };
+  if (planState) {
+    body.plan_state = planState;
+  }
 
   const response = await fetch("/api/v1/ai_assistant/chat/stream", {
     method: "POST",
@@ -126,7 +134,7 @@ async function postChatStream(
       ...(csrfToken ? { "X-CSRFToken": csrfToken } : {}),
     },
     credentials: "same-origin",
-    body: JSON.stringify({ messages, context }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -552,11 +560,12 @@ function getStyles(t: themeApi.SupersetTheme) {
     // update_todo checklist
     todoContainer: {
       marginBottom: t.marginSM,
-      padding: `${t.paddingXS + 2}px ${t.paddingSM}px`,
+      padding: `${t.paddingSM}px`,
       borderRadius: t.borderRadius,
       backgroundColor: t.colorBgContainer,
       border: `1px solid ${t.colorBorderSecondary}`,
-      fontSize: t.fontSizeSM,
+      borderLeft: `3px solid ${t.colorPrimary}`,
+      fontSize: t.fontSize,
     },
     todoTitle: {
       fontWeight: t.fontWeightStrong,
@@ -565,6 +574,7 @@ function getStyles(t: themeApi.SupersetTheme) {
       display: "flex",
       alignItems: "center",
       gap: 6,
+      fontSize: t.fontSize,
     },
     todoItem: {
       display: "flex",
@@ -751,6 +761,8 @@ const ChatPanel: React.FC = () => {
   const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
   // Pending ask_user question (shown as interactive card)
   const [pendingQuestion, setPendingQuestion] = useState<EditorAction | null>(null);
+  // Latest plan_state from the backend (for resuming after ask_user)
+  const latestPlanState = useRef<Record<string, unknown> | undefined>(undefined);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -923,6 +935,8 @@ const ChatPanel: React.FC = () => {
     setStreamingSteps([]);
     setTodoItems([]);
     setPendingQuestion(null);
+    // Reset plan state for a new conversation
+    latestPlanState.current = undefined;
 
     try {
       const context = await getContext();
@@ -952,6 +966,7 @@ const ChatPanel: React.FC = () => {
       const collectedSteps: AgentStep[] = [];
       const collectedActions: EditorAction[] = [];
       let finalResponse = "";
+      let receivedPlanState: Record<string, unknown> | undefined;
       let hasError = false;
       let hasRunnable = false;
 
@@ -970,11 +985,19 @@ const ChatPanel: React.FC = () => {
         } else if (evt.event === "response") {
           finalResponse =
             (evt.data.response as string) || "I couldn't generate a response.";
+          if (evt.data.plan_state) {
+            receivedPlanState = evt.data.plan_state as Record<string, unknown>;
+          }
         } else if (evt.event === "error") {
           finalResponse = `Error: ${evt.data.error || "Something went wrong"}`;
           hasError = true;
         }
       });
+
+      // Store plan_state for potential resume
+      if (receivedPlanState) {
+        latestPlanState.current = receivedPlanState;
+      }
 
       // Build the final assistant message with all collected data
       const assistantMessage: ChatMessage = {
@@ -985,6 +1008,7 @@ const ChatPanel: React.FC = () => {
         actions: collectedActions,
         error: hasError,
         hasRunnable: hasRunnable,
+        planState: receivedPlanState,
       };
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
@@ -1022,9 +1046,10 @@ const ChatPanel: React.FC = () => {
     setEditingIdx(null);
     setTodoItems([]);
     setPendingQuestion(null);
+    latestPlanState.current = undefined;
   }, []);
 
-  // Handle user clicking an option from ask_user
+  // Handle user clicking an option from ask_user — sends plan_state to resume
   const handleOptionSelect = useCallback(async (optionLabel: string) => {
     if (loading) return;
     setPendingQuestion(null);
@@ -1062,9 +1087,11 @@ const ChatPanel: React.FC = () => {
       const collectedSteps: AgentStep[] = [];
       const collectedActions: EditorAction[] = [];
       let finalResponse = "";
+      let receivedPlanState: Record<string, unknown> | undefined;
       let hasError = false;
       let hasRunnable = false;
 
+      // Send the plan_state so backend resumes instead of starting fresh
       await postChatStream(apiMessages, context, async (evt) => {
         if (evt.event === "step") {
           const step = evt.data as unknown as AgentStep;
@@ -1078,11 +1105,18 @@ const ChatPanel: React.FC = () => {
         } else if (evt.event === "response") {
           finalResponse =
             (evt.data.response as string) || "I couldn't generate a response.";
+          if (evt.data.plan_state) {
+            receivedPlanState = evt.data.plan_state as Record<string, unknown>;
+          }
         } else if (evt.event === "error") {
           finalResponse = `Error: ${evt.data.error || "Something went wrong"}`;
           hasError = true;
         }
-      });
+      }, latestPlanState.current);
+
+      if (receivedPlanState) {
+        latestPlanState.current = receivedPlanState;
+      }
 
       const assistantMessage: ChatMessage = {
         role: "assistant",
@@ -1092,6 +1126,7 @@ const ChatPanel: React.FC = () => {
         actions: collectedActions,
         error: hasError,
         hasRunnable: hasRunnable,
+        planState: receivedPlanState,
       };
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
@@ -1384,7 +1419,12 @@ const ChatPanel: React.FC = () => {
         {todoItems.length > 0 && (
           <div style={styles.todoContainer}>
             <div style={styles.todoTitle}>
-              <span>Task Progress</span>
+              <span>
+                Plan ({todoItems.filter((i) => i.status === "done").length}/{todoItems.length} done)
+              </span>
+              {todoItems.some((i) => i.status === "in_progress") && (
+                <span style={styles.todoSpinner} />
+              )}
             </div>
             {todoItems.map((item) => (
               <div key={item.id} style={styles.todoItem}>
