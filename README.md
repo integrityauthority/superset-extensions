@@ -14,17 +14,20 @@ An AI-powered data assistant that lives inside SQL Lab. Ask questions in natural
 - Natural language to SQL with schema introspection and metadata awareness
 - Explores both **tables and views** automatically
 - Interactive chart creation (bar, line, pie, table)
+- **Dashboard creation** — builds complete dashboards from charts with responsive grid layout
 - **Dataset and chart management** — browse, inspect, and edit existing Superset objects
+- **Planner-Checker loop** — autonomous LLM-generated execution plan with step-by-step verification, automatic re-planning on failure, and configurable step limits
 - **Clarification questions** — the AI asks clickable option buttons when the request is ambiguous
 - **Live task progress** — visible todo checklist shows real-time progress on multi-step tasks
-- **Planner-Checker loop** — LLM-generated execution plan with step-by-step verification and automatic re-planning
-- **SQL validation** — queries are validated against the database before being placed in the editor
+- **SQL pre-validation** — queries are syntax-checked via `sqlglot` before execution and editor placement
+- **Dashboard safety net** — deduplication of charts when adding to dashboards
 - Send to Editor buttons on all SQL code blocks
 - Streaming responses with real-time tool-use visibility
 - Multiple LLM providers: Azure OpenAI, OpenAI, Ollama (local/self-hosted)
 - Ollama model auto-discovery with per-question model selector
+- JWT Bearer token support for programmatic API access
 - Custom system prompt override via config or environment variable
-- 17 agent tools for comprehensive data exploration and management
+- **18 agent tools** for comprehensive data exploration, management, and dashboard building
 
 See the **[full documentation](ai_assistant/README.md)** for configuration, architecture, and API reference.
 
@@ -110,7 +113,12 @@ We welcome contributions! Here's how:
 - [x] Live task progress checklist (`update_todo`) for multi-step operations
 - [x] SQL validation — queries verified against the database before editor placement
 - [x] Custom system prompt override (`system_prompt_override` / `AI_SYSTEM_PROMPT_OVERRIDE`)
-- [ ] Dashboard-level AI assistant (create dashboards, add charts to dashboards)
+- [x] Dashboard creation (`create_dashboard`) — build complete dashboards from saved charts
+- [x] Autonomous planner mode — goal-first planning with budget-aware step allocation
+- [x] JWT Bearer token auth for programmatic / headless API access
+- [x] SQL pre-validation with `sqlglot` before execution
+- [x] Dashboard safety net — chart deduplication when composing dashboards
+- [ ] Superset Extensions Storage API integration (state persistence — [PR #39171](https://github.com/apache/superset/pull/39171))
 - [ ] Context-aware mode across all Superset tabs (Dashboard, Explore, SQL Lab)
 - [ ] Multi-turn memory with conversation history persistence
 - [ ] Playbooks / knowledge base per database, schema, and table (e.g. [agentplaybooks.ai](https://agentplaybooks.ai))
