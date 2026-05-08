@@ -130,6 +130,8 @@ def chat() -> tuple[Response, int] | Response:
     model_override = context.get("model_override")
     provider_override = context.get("provider_override")
 
+    plan_state = data.get("plan_state")
+
     try:
         result = run_agent(
             messages=messages,
@@ -140,6 +142,7 @@ def chat() -> tuple[Response, int] | Response:
             current_sql=context.get("current_sql"),
             model_override=model_override,
             provider_override=provider_override,
+            plan_state=plan_state,
         )
         return jsonify(result)
     except Exception as ex:
@@ -177,6 +180,7 @@ def chat_stream() -> tuple[Response, int] | Response:
 
     model_override = context.get("model_override")
     provider_override = context.get("provider_override")
+    plan_state = data.get("plan_state")
 
     def generate() -> Generator[str, None, None]:
         try:
@@ -189,6 +193,7 @@ def chat_stream() -> tuple[Response, int] | Response:
                 current_sql=context.get("current_sql"),
                 model_override=model_override,
                 provider_override=provider_override,
+                plan_state=plan_state,
             ):
                 event_type = event["event"]
                 event_data = json.dumps(event["data"], default=str)

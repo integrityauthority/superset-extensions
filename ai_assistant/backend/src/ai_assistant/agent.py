@@ -37,10 +37,15 @@ from ai_assistant.planner import (
     check_step_result,
     apply_plan_updates,
     plan_to_todo_items,
+    serialize_plan,
+    deserialize_plan,
     ExecutionPlan,
+    PlanContext,
     PlanStep,
 )
-from ai_assistant.tools import execute_tool, TOOLS_WITH_ACTIONS, TOOL_DEFINITIONS
+from ai_assistant.tools import (
+    execute_tool, discover_schema, TOOLS_WITH_ACTIONS, TOOL_DEFINITIONS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +62,48 @@ def _detect_db_engine_type(database_id: int) -> str | None:
     except Exception as ex:
         logger.debug("Could not detect DB engine type for db %s: %s", database_id, ex)
     return None
+
+
+def _validate_chart_sql(
+    sql: str,
+    database_id: int,
+    schema_name: str | None,
+    catalog: str | None,
+) -> str | None:
+    """Quick validation of chart SQL: checks row count and samples data.
+
+    Returns a human-readable validation string, or None if validation is skipped.
+    """
+    from ai_assistant.tools import tool_execute_sql
+
+    try:
+        # Wrap in a count query
+        count_sql = f"SELECT COUNT(*) AS cnt FROM ({sql}) _validation_subq"
+        count_result = tool_execute_sql(
+            database_id, count_sql, schema_name, catalog, max_rows=1,
+        )
+        row_count = 0
+        if count_result.get("data"):
+            row_count = count_result["data"][0].get("cnt", 0)
+
+        if row_count == 0:
+            return "WARNING: Query returned 0 rows — chart will be empty!"
+
+        # Sample first 3 rows to check values look realistic
+        sample_result = tool_execute_sql(
+            database_id, sql, schema_name, catalog, max_rows=3,
+        )
+        sample_str = ""
+        if sample_result.get("data"):
+            sample_str = "; ".join(
+                str(row) for row in sample_result["data"][:3]
+            )[:300]
+
+        return f"OK: {row_count} rows. Sample: {sample_str}"
+
+    except Exception as ex:
+        logger.debug("Chart SQL validation failed: %s", ex)
+        return f"Validation error: {ex}"
 
 SYSTEM_PROMPT = """\
 You are an AI SQL assistant integrated into Apache Superset's SQL Lab.
@@ -300,6 +347,7 @@ def run_agent(
     current_sql: str | None = None,
     model_override: str | None = None,
     provider_override: str | None = None,
+    plan_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Run the AI agent loop (non-streaming).
@@ -313,12 +361,14 @@ def run_agent(
             "response": "assistant's final text response",
             "actions": [{"type": "set_sql", "sql": "..."}],
             "steps": [{"type": "tool_call", ...}, ...],
-            "usage": {"prompt_tokens": ..., "completion_tokens": ..., "total_tokens": ...}
+            "usage": {"prompt_tokens": ..., "completion_tokens": ..., "total_tokens": ...},
+            "plan_state": {...}  (serialized plan for frontend to send back)
         }
     """
     steps: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
     final_response = ""
+    final_plan_state: dict[str, Any] | None = None
     total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     has_error = False
 
@@ -331,6 +381,7 @@ def run_agent(
         current_sql=current_sql,
         model_override=model_override,
         provider_override=provider_override,
+        plan_state=plan_state,
     ):
         evt_type = event.get("event")
         data = event.get("data", {})
@@ -341,6 +392,7 @@ def run_agent(
             actions.append(data)
         elif evt_type == "response":
             final_response = data.get("response", "")
+            final_plan_state = data.get("plan_state")
             usage = data.get("usage", {})
             total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
             total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
@@ -355,6 +407,8 @@ def run_agent(
         "steps": steps,
         "usage": total_usage,
     }
+    if final_plan_state:
+        result["plan_state"] = final_plan_state
     if has_error:
         result["error"] = True
     return result
@@ -369,6 +423,7 @@ def run_agent_stream(
     current_sql: str | None = None,
     model_override: str | None = None,
     provider_override: str | None = None,
+    plan_state: dict[str, Any] | None = None,
 ) -> Any:
     """
     Streaming version of run_agent.
@@ -377,10 +432,13 @@ def run_agent_stream(
     ``enable_planner`` is True, otherwise falls back to the simple
     tool-calling loop (``_run_simple_stream``).
 
+    If ``plan_state`` is provided and valid, resumes the existing plan
+    instead of creating a new one.
+
     Both paths yield the same SSE-style event dicts:
         {"event": "step",     "data": {"type": "tool_call", "tool": ..., ...}}
         {"event": "action",   "data": {"type": "set_editor_sql", "sql": ...}}
-        {"event": "response", "data": {"response": ..., "usage": ...}}
+        {"event": "response", "data": {"response": ..., "usage": ..., "plan_state": ...}}
         {"event": "error",    "data": {"error": ...}}
     """
     config = get_ai_config()
@@ -391,6 +449,7 @@ def run_agent_stream(
         yield from _run_planner_stream(
             messages, database_id, database_name, schema_name,
             catalog, current_sql, model_override, provider_override,
+            plan_state=plan_state,
         )
     else:
         logger.info("Agent: using simple tool-calling stream")
@@ -604,22 +663,28 @@ def _build_schema_context(
 def _build_step_system_prompt(
     base_system_prompt: str,
     step: PlanStep,
-    previous_context: list[dict[str, str]],
-    is_first_step: bool = False,
+    plan_context: PlanContext,
 ) -> str:
     """Build a system prompt scoped to a specific plan step.
 
-    Includes the full base system prompt plus step-specific instructions
-    and accumulated context from earlier steps.
+    Includes the full base system prompt, rich discovered context (tables,
+    columns, entity filter), and step-specific instructions.
     """
     parts = [base_system_prompt]
 
-    # Planner mode is always fully autonomous — no ask_user available.
-    # The tool is not even in the tool list, but reinforce in prompt.
-    ask_user_rule = (
-        f"- You are in AUTONOMOUS execution mode. Make your best-guess "
-        f"decisions and keep going. Do NOT ask questions — just deliver results.\n"
-    )
+    # Inject the rich discovered context
+    context_block = plan_context.to_prompt_block()
+    if context_block.strip():
+        parts.append(f"\n## Discovered Database Context\n{context_block}")
+
+    # Build entity filter reminder if applicable
+    entity_reminder = ""
+    if plan_context.entity_filter:
+        entity_reminder = (
+            f"- *** MANDATORY: Every SQL query MUST include this WHERE filter: "
+            f"{plan_context.entity_filter} ***\n"
+            f"  Copy it verbatim. Do NOT substitute a different column or value.\n"
+        )
 
     parts.append(
         f"\n## Current Task (Step {step.step_id})\n"
@@ -628,8 +693,12 @@ def _build_step_system_prompt(
         f"**Expected outcome**: {step.expected_outcome}\n\n"
         f"RULES FOR THIS STEP:\n"
         f"- Focus ONLY on this step. Do NOT work on future steps.\n"
-        f"- Be efficient: call get_table_columns BEFORE writing SQL so you use "
-        f"correct column names. NEVER guess column names.\n"
+        f"- Use the EXACT column names from the Discovered Database Context above. "
+        f"NEVER guess or invent column names.\n"
+        f"{entity_reminder}"
+        f"- **NO DDL. ONLY SELECT.** You MUST NOT use CREATE, ALTER, DROP, INSERT, "
+        f"UPDATE, or DELETE. All SQL must be pure SELECT queries. Do NOT create "
+        f"views, temp tables, or stored procedures.\n"
         f"- If a search returns 0 rows, try 1-2 alternative approaches (different "
         f"LIKE patterns, COLLATE, etc.) then STOP and report what you found.\n"
         f"- Do NOT repeat the same query more than twice. Accept partial results.\n"
@@ -638,16 +707,16 @@ def _build_step_system_prompt(
         f"specifically about placing a query in the editor (not for chart creation).\n"
         f"- Do NOT call set_editor_sql as a way to 'test' a query — use execute_sql "
         f"for testing. set_editor_sql is ONLY for the final user-facing query.\n"
-        f"{ask_user_rule}"
+        f"- **DATA VALIDATION**: BEFORE calling create_chart, ALWAYS test your SQL "
+        f"with execute_sql first to verify it returns rows and the values look "
+        f"realistic. If the query returns 0 rows, fix the SQL before creating the "
+        f"chart. After chart creation, a validation check will run automatically "
+        f"— if it reports 0 rows, fix the query.\n"
+        f"- You are in AUTONOMOUS execution mode. Make your best-guess "
+        f"decisions and keep going. Do NOT ask questions — just deliver results.\n"
         f"- When done, provide a brief summary of what you accomplished and any "
         f"key data (IDs, names, counts) you discovered."
     )
-
-    if previous_context:
-        ctx_text = "\n## Results from Previous Steps\n"
-        for ctx in previous_context:
-            ctx_text += f"- **Step {ctx['step_id']}** ({ctx['description']}): {ctx['summary']}\n"
-        parts.append(ctx_text)
 
     return "\n".join(parts)
 
@@ -748,6 +817,28 @@ def _run_step_tools(
                     step_chart_ids.append(tool_result["chart_id"])
                     step._chart_ids = step_chart_ids  # type: ignore[attr-defined]
 
+                # Validate chart data: run the SQL and check row count
+                if tool_result.get("chart_id") and tool_args.get("sql"):
+                    validation = _validate_chart_sql(
+                        tool_args["sql"], database_id, schema_name, catalog,
+                    )
+                    if validation:
+                        # Inject validation result into LLM context
+                        tool_result["_data_validation"] = validation
+                        logger.info(
+                            "  Chart validation for chart %d: %s",
+                            tool_result["chart_id"], validation,
+                        )
+                        yield {
+                            "event": "step",
+                            "data": {
+                                "type": "tool_call",
+                                "tool": "validate_data",
+                                "args": {"chart_id": tool_result["chart_id"]},
+                                "result_summary": validation,
+                            },
+                        }
+
                 # Track if a dashboard was created
                 if tool_result.get("dashboard_id"):
                     step._dashboard_created = True  # type: ignore[attr-defined]
@@ -818,12 +909,14 @@ def _run_planner_stream(
     current_sql: str | None = None,
     model_override: str | None = None,
     provider_override: str | None = None,
+    plan_state: dict[str, Any] | None = None,
 ) -> Any:
-    """Planner-driven streaming agent.
+    """Phased planner-driven streaming agent.
 
-    Implements: plan → per-step execute → check → replan → summary.
-    Yields the same SSE events as ``run_agent_stream`` so the frontend
-    doesn't need any changes.
+    Implements: DISCOVER → PLAN → EXECUTE → DELIVER → SUMMARIZE.
+
+    If ``plan_state`` is provided, resumes the plan from where it left off
+    (e.g. after an ask_user interruption).
     """
     config = get_ai_config()
     provider = provider_override or config["provider"]
@@ -860,66 +953,274 @@ def _run_planner_stream(
 
     total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-    # --- Phase 1: Create plan ---
-    logger.info("Planner: creating plan for: %s", user_question[:200])
-    yield {
-        "event": "step",
-        "data": {
-            "type": "tool_call",
-            "tool": "create_plan",
-            "args": {"question": user_question[:100]},
-            "result_summary": "Creating execution plan...",
-        },
-    }
+    # -----------------------------------------------------------------------
+    # Try to resume an existing plan
+    # -----------------------------------------------------------------------
+    plan: ExecutionPlan | None = None
+    if plan_state:
+        try:
+            plan = deserialize_plan(plan_state)
+            # Inject the user's latest answer into context
+            plan.context.user_answers[f"answer_{len(plan.context.user_answers)}"] = user_question
+            logger.info(
+                "Planner: RESUMED plan (phase=%s, step_idx=%d, %d steps)",
+                plan.phase, plan.current_step_idx, len(plan.steps),
+            )
+        except Exception as ex:
+            logger.warning("Planner: failed to deserialize plan_state: %s", ex)
+            plan = None
 
-    schema_context = _build_schema_context(database_name, schema_name, db_engine_type)
+    # -----------------------------------------------------------------------
+    # Phase 1: DISCOVER (code-driven, no LLM)
+    # -----------------------------------------------------------------------
+    if plan is None:
+        logger.info("Planner: DISCOVER phase for: %s", user_question[:200])
+        yield {
+            "event": "step",
+            "data": {
+                "type": "tool_call",
+                "tool": "discover_schema",
+                "args": {"question": user_question[:100]},
+                "result_summary": "Exploring database schema...",
+            },
+        }
 
-    try:
-        plan = create_plan(
-            question=user_question,
-            schema_context=schema_context,
-            provider_config=provider_config,
-            provider=provider,
-            max_steps=max_steps,
+        discovery = discover_schema(
+            database_id=database_id,
+            schema_name=schema_name,
+            catalog=catalog,
+            user_question=user_question,
         )
-    except Exception as ex:
-        logger.error("Planner failed to create plan: %s", ex)
-        # Fallback to simple stream
+
+        plan_context = PlanContext(
+            tables=discovery.get("tables", {}),
+            views=discovery.get("views", {}),
+            entity_filter=discovery.get("entity_filter"),
+            entity_name=discovery.get("entity_name"),
+            db_backend=discovery.get("db_backend", ""),
+            schema_name=schema_name,
+            sample_values=discovery.get("sample_values", {}),
+            entity_candidates=discovery.get("entity_candidates", []),
+        )
+
+        yield {
+            "event": "step",
+            "data": {
+                "type": "tool_call",
+                "tool": "discover_schema",
+                "args": {},
+                "result_summary": (
+                    f"Discovered {len(plan_context.tables)} tables, "
+                    f"{len(plan_context.views)} views"
+                    + (f", entity: {plan_context.entity_name}" if plan_context.entity_name else "")
+                    + (f", filter: {plan_context.entity_filter}" if plan_context.entity_filter else "")
+                    + (f", {len(plan_context.entity_candidates)} candidates found"
+                       if plan_context.entity_candidates else "")
+                ),
+            },
+        }
+
+        # If entity was extracted but not found, and we have candidates → ask_user
+        if not plan_context.entity_filter and plan_context.entity_candidates:
+            logger.info(
+                "Planner: entity not found, asking user to pick from %d candidates",
+                len(plan_context.entity_candidates),
+            )
+            extracted = discovery.get("_extracted_entity", "")
+            options = [
+                {"id": str(i), "label": c["name"]}
+                for i, c in enumerate(plan_context.entity_candidates[:6])
+            ]
+            options.append({"id": "none", "label": "Egyik sem / None of these"})
+
+            # Create a partial plan with phase=ask_user so we can resume
+            partial_plan = ExecutionPlan(
+                question=user_question,
+                context=plan_context,
+                phase="ask_user",
+            )
+            plan_state_for_resume = serialize_plan(partial_plan)
+
+            yield {
+                "event": "action",
+                "data": {
+                    "type": "ask_user",
+                    "question": (
+                        f"Több találat is van \"{extracted}\" keresésre. "
+                        f"Melyik cégre gondoltál?"
+                    ),
+                    "options": options,
+                },
+            }
+            # End the stream — frontend will resume with user's answer + plan_state
+            yield {
+                "event": "response",
+                "data": {
+                    "response": "Kérlek válaszd ki a megfelelő céget a listából.",
+                    "usage": total_usage,
+                    "plan_state": plan_state_for_resume,
+                },
+            }
+            return
+
+        # -----------------------------------------------------------------------
+        # Phase 2: PLAN (one LLM call with rich context)
+        # -----------------------------------------------------------------------
+        logger.info("Planner: PLAN phase")
         yield {
             "event": "step",
             "data": {
                 "type": "tool_call",
                 "tool": "create_plan",
-                "args": {},
-                "result_summary": f"Plan creation failed: {ex} — falling back to simple mode",
+                "args": {"question": user_question[:100]},
+                "result_summary": "Creating execution plan with discovered context...",
             },
         }
-        yield from _run_simple_stream(
-            messages, database_id, database_name, schema_name,
-            catalog, current_sql, model_override, provider_override,
-        )
-        return
 
-    logger.info("Planner: plan created with %d steps", len(plan.steps))
+        try:
+            plan = create_plan(
+                question=user_question,
+                plan_context=plan_context,
+                provider_config=provider_config,
+                provider=provider,
+                max_steps=max_steps,
+            )
+        except Exception as ex:
+            logger.error("Planner failed to create plan: %s", ex)
+            yield {
+                "event": "step",
+                "data": {
+                    "type": "tool_call",
+                    "tool": "create_plan",
+                    "args": {},
+                    "result_summary": f"Plan creation failed: {ex} — falling back to simple mode",
+                },
+            }
+            yield from _run_simple_stream(
+                messages, database_id, database_name, schema_name,
+                catalog, current_sql, model_override, provider_override,
+            )
+            return
+
+        logger.info("Planner: plan created with %d steps", len(plan.steps))
+        yield {
+            "event": "step",
+            "data": {
+                "type": "tool_call",
+                "tool": "create_plan",
+                "args": {"question": user_question[:100]},
+                "result_summary": f"Plan created: {len(plan.steps)} steps",
+            },
+        }
+
+    # -----------------------------------------------------------------------
+    # Resume from ask_user (entity selection)
+    # -----------------------------------------------------------------------
+    if plan and plan.phase == "ask_user":
+        logger.info("Planner: resuming from ask_user, user answered: %s", user_question[:100])
+        selected_entity = user_question.strip()
+
+        if selected_entity.lower() not in ("egyik sem", "none of these", "egyik sem / none of these"):
+            # User selected a candidate — do the entity lookup with the exact name
+            is_mssql = "mssql" in plan.context.db_backend
+            from ai_assistant.tools import _lookup_entity, _sample_entity_data
+
+            entity_filter = _lookup_entity(
+                database_id,
+                plan.context.schema_name or ("dbo" if is_mssql else "public"),
+                catalog,
+                selected_entity,
+                plan.context.tables,
+                is_mssql,
+            )
+            if entity_filter:
+                plan.context.entity_filter = entity_filter
+                plan.context.entity_name = selected_entity
+                plan.context.entity_candidates = []
+
+                # Sample entity data now that we have a filter
+                sample_info = _sample_entity_data(
+                    database_id,
+                    plan.context.schema_name or ("dbo" if is_mssql else "public"),
+                    catalog,
+                    entity_filter,
+                    plan.context.tables,
+                    is_mssql,
+                )
+                if sample_info:
+                    plan.context.sample_values = sample_info
+
+                logger.info(
+                    "Planner: entity '%s' resolved with filter: %s",
+                    selected_entity, entity_filter[:100],
+                )
+                yield {
+                    "event": "step",
+                    "data": {
+                        "type": "tool_call",
+                        "tool": "discover_schema",
+                        "args": {},
+                        "result_summary": f"Entity resolved: {selected_entity}",
+                    },
+                }
+            else:
+                logger.warning(
+                    "Planner: selected entity '%s' lookup failed — proceeding without filter",
+                    selected_entity,
+                )
+        else:
+            logger.info("Planner: user selected 'none' — proceeding without entity filter")
+
+        # Now create the plan
+        plan.phase = "plan"
+        logger.info("Planner: PLAN phase (after entity selection)")
+        yield {
+            "event": "step",
+            "data": {
+                "type": "tool_call",
+                "tool": "create_plan",
+                "args": {"question": plan.question[:100]},
+                "result_summary": "Creating execution plan...",
+            },
+        }
+        try:
+            plan = create_plan(
+                question=plan.question,
+                plan_context=plan.context,
+                provider_config=provider_config,
+                provider=provider,
+                max_steps=max_steps,
+            )
+        except Exception as ex:
+            logger.error("Planner failed to create plan after entity selection: %s", ex)
+            yield {
+                "event": "error",
+                "data": {"error": f"Plan creation failed: {ex}"},
+            }
+            return
+
+        logger.info("Planner: plan created with %d steps", len(plan.steps))
+        yield {
+            "event": "step",
+            "data": {
+                "type": "tool_call",
+                "tool": "create_plan",
+                "args": {"question": plan.question[:100]},
+                "result_summary": f"Plan created: {len(plan.steps)} steps",
+            },
+        }
 
     # Emit plan as update_todo
-    yield {
-        "event": "step",
-        "data": {
-            "type": "tool_call",
-            "tool": "create_plan",
-            "args": {"question": user_question[:100]},
-            "result_summary": f"Plan created: {len(plan.steps)} steps",
-        },
-    }
     yield {
         "event": "action",
         "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
     }
 
-    # --- Phase 2: Execute steps ---
-    previous_context: list[dict[str, str]] = []
-    step_idx = 0
+    # -----------------------------------------------------------------------
+    # Phase 3: EXECUTE steps
+    # -----------------------------------------------------------------------
+    plan.phase = "execute"
+    step_idx = plan.current_step_idx
 
     while step_idx < len(plan.steps):
         step = plan.steps[step_idx]
@@ -939,13 +1240,10 @@ def _run_planner_stream(
             step.step_id, len(plan.steps), step.description,
         )
 
-        # Build step-scoped system prompt (ask_user allowed only in first step)
         step_system_prompt = _build_step_system_prompt(
-            base_system_prompt, step, previous_context,
-            is_first_step=(step_idx == 0),
+            base_system_prompt, step, plan.context,
         )
 
-        # Execute step
         step_error = None
         step_summary = ""
 
@@ -968,7 +1266,6 @@ def _run_planner_stream(
                 step_error = evt["data"].get("error", "Unknown error")
                 break
             else:
-                # Pass through step/action events to the frontend
                 yield evt
 
         if step_error:
@@ -986,11 +1283,10 @@ def _run_planner_stream(
                     "event": "action",
                     "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
                 }
-                # Don't advance step_idx — retry the same step
                 continue
             else:
                 logger.warning(
-                    "Planner: step %s failed after %d retries, marking as error",
+                    "Planner: step %s failed after %d retries",
                     step.step_id, max_retries,
                 )
                 yield {
@@ -1000,22 +1296,32 @@ def _run_planner_stream(
                 step_idx += 1
                 continue
 
-        # Step succeeded
+        # Step succeeded — update context
         step.status = "done"
         step.result_summary = step_summary[:300] if step_summary else step.result_summary
 
-        previous_context.append({
-            "step_id": str(step.step_id),
-            "description": step.description,
-            "summary": step.result_summary or "(no summary)",
-        })
+        # Update PlanContext with step results
+        plan.context.step_results[str(step.step_id)] = step.result_summary or "(no summary)"
+
+        # Collect chart IDs from step
+        for cid in getattr(step, "_chart_ids", []):
+            if cid not in plan.context.chart_ids:
+                plan.context.chart_ids.append(cid)
+
+        # Track dashboard creation
+        if getattr(step, "_dashboard_created", False):
+            plan.context.dashboard_created = True
+            logger.info(
+                "Planner: dashboard_created flag set to True after step %s",
+                step.step_id,
+            )
 
         yield {
             "event": "action",
             "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
         }
 
-        # --- Phase 3: Check & replan ---
+        # Check & replan
         try:
             updates = check_step_result(
                 plan=plan,
@@ -1029,7 +1335,6 @@ def _run_planner_stream(
                     len(updates), step.step_id,
                 )
                 apply_plan_updates(plan, step_idx, updates, max_steps=max_steps)
-                # Emit updated plan
                 yield {
                     "event": "action",
                     "data": {"type": "update_todo", "items": plan_to_todo_items(plan)},
@@ -1039,53 +1344,54 @@ def _run_planner_stream(
 
         step_idx += 1
 
-    # --- Phase 3b: Dashboard safety net ---
-    # If user asked for a dashboard but no create_dashboard was called, do it now
+    # -----------------------------------------------------------------------
+    # Phase 4: DELIVER — Dashboard safety net
+    # -----------------------------------------------------------------------
+    plan.phase = "deliver"
     dashboard_keywords = any(
         kw in user_question.lower()
         for kw in ("dashboard", "dashboardot", "műszerfal", "irányítópult")
     )
-    dashboard_was_created = (
-        any(getattr(s, "_dashboard_created", False) for s in plan.steps)
-        or any(
-            "dashboard_url" in (ctx.get("summary") or "")
-            or "Dashboard created" in (ctx.get("summary") or "")
-            for ctx in previous_context
-        )
-    )
-    if dashboard_keywords and not dashboard_was_created:
-        # Collect chart IDs from step objects (most reliable)
-        collected_chart_ids: list[int] = []
-        for s in plan.steps:
-            for cid in getattr(s, "_chart_ids", []):
-                if cid not in collected_chart_ids:
-                    collected_chart_ids.append(cid)
-        # Fallback: parse from context summaries
-        if not collected_chart_ids:
-            for ctx in previous_context:
-                summary_text = ctx.get("summary") or ""
-                for match in re.findall(r"chart_id[\"']?\s*[:=]\s*(\d+)", summary_text):
-                    cid = int(match)
-                    if cid not in collected_chart_ids:
-                        collected_chart_ids.append(cid)
 
-        if collected_chart_ids:
+    # Double-check: scan step results for dashboard creation signals
+    if not plan.context.dashboard_created:
+        for summary in plan.context.step_results.values():
+            if "dashboard" in summary.lower() and (
+                "created" in summary.lower() or "dashboard_id" in summary.lower()
+                or "/superset/dashboard/" in summary
+            ):
+                logger.info(
+                    "Planner: dashboard_created detected from step result: %s",
+                    summary[:200],
+                )
+                plan.context.dashboard_created = True
+                break
+
+    if dashboard_keywords and not plan.context.dashboard_created:
+        chart_ids = plan.context.chart_ids
+        # Fallback: parse from step results
+        if not chart_ids:
+            for summary in plan.context.step_results.values():
+                for match in re.findall(r"chart_id[\"']?\s*[:=]\s*(\d+)", summary):
+                    cid = int(match)
+                    if cid not in chart_ids:
+                        chart_ids.append(cid)
+
+        if chart_ids:
             logger.info(
                 "Planner: dashboard safety net — creating dashboard with chart IDs: %s",
-                collected_chart_ids,
+                chart_ids,
             )
             from ai_assistant.tools import tool_create_dashboard
             dash_result = tool_create_dashboard(
-                chart_ids=collected_chart_ids,
+                chart_ids=chart_ids,
                 dashboard_title=user_question[:80],
             )
             dash_summary = _summarize_result(dash_result)
-            previous_context.append({
-                "step_id": "auto",
-                "description": "Auto-created dashboard (safety net)",
-                "summary": dash_summary,
-            })
-            # Emit dashboard action
+            plan.context.step_results["deliver"] = dash_summary
+            if dash_result.get("dashboard_id"):
+                plan.context.dashboard_created = True
+
             if "error" not in dash_result and "action" in dash_result:
                 action_data = {**dash_result}
                 action_data["type"] = action_data.pop("action")
@@ -1095,23 +1401,27 @@ def _run_planner_stream(
                 "data": {
                     "type": "tool_call",
                     "tool": "create_dashboard",
-                    "args": {"chart_ids": collected_chart_ids},
+                    "args": {"chart_ids": chart_ids},
                     "result_summary": dash_summary,
                 },
             }
         else:
-            logger.warning(
-                "Planner: dashboard safety net — user wanted dashboard but no chart IDs found"
-            )
+            logger.warning("Planner: DELIVER — no chart IDs found for dashboard")
+    else:
+        logger.info(
+            "Planner: DELIVER — dashboard already created=%s, keywords=%s",
+            plan.context.dashboard_created, dashboard_keywords,
+        )
 
-    # --- Phase 4: Final summary ---
+    # -----------------------------------------------------------------------
+    # Phase 5: SUMMARIZE
+    # -----------------------------------------------------------------------
+    plan.phase = "done"
     logger.info("Planner: all steps done, generating summary")
 
-    summary_parts = [
-        f"Original question: {user_question}\n\nExecution results:"
-    ]
-    for ctx in previous_context:
-        summary_parts.append(f"- Step {ctx['step_id']} ({ctx['description']}): {ctx['summary']}")
+    summary_parts = [f"Original question: {user_question}\n\nExecution results:"]
+    for sid, summary in plan.context.step_results.items():
+        summary_parts.append(f"- Step {sid}: {summary}")
 
     # Mark all todos done
     for s in plan.steps:
@@ -1126,13 +1436,13 @@ def _run_planner_stream(
     summary_messages: list[dict[str, Any]] = [
         {"role": "system", "content": base_system_prompt},
         {"role": "user", "content": (
-            f"You have completed a multi-step task. Here is what was accomplished:\n\n"
-            + "\n".join(summary_parts) +
-            f"\n\nProvide a clear, complete summary for the user. "
-            f"Include key findings, any SQL queries that were set in the editor, "
-            f"and any charts that were created. "
-            f"If a dashboard was created, include its direct link as a Markdown link "
-            f"so the user can click it (e.g. [Dashboard title](/superset/dashboard/ID/))."
+            "You have completed a multi-step task. Here is what was accomplished:\n\n"
+            + "\n".join(summary_parts)
+            + "\n\nProvide a clear, complete summary for the user. "
+            "Include key findings, any SQL queries that were set in the editor, "
+            "and any charts that were created. "
+            "If a dashboard was created, include its direct link as a Markdown link "
+            "so the user can click it (e.g. [Dashboard title](/superset/dashboard/ID/))."
         )},
     ]
 
@@ -1151,11 +1461,15 @@ def _run_planner_stream(
     except Exception:
         final_content = "\n".join(summary_parts)
 
+    # Serialize plan state for frontend persistence
+    final_plan_state = serialize_plan(plan)
+
     yield {
         "event": "response",
         "data": {
             "response": final_content or "Task completed.",
             "usage": total_usage,
+            "plan_state": final_plan_state,
         },
     }
 

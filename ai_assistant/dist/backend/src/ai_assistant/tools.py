@@ -27,6 +27,8 @@ security permissions and row-level security.
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime
 from typing import Any
 
 from superset.connectors.sqla.models import SqlaTable
@@ -35,6 +37,15 @@ from superset.models.core import Database
 from superset.sql.parse import Table
 
 logger = logging.getLogger(__name__)
+
+
+def _ai_resource_name(topic: str) -> str:
+    """Generate a standardised AI resource name: ai_YYYYMMDD_HHMM_Topic."""
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    # Keep only alphanumeric, spaces, hyphens, underscores; then convert spaces to _
+    safe = re.sub(r"[^\w\s-]", "", topic).strip()
+    safe = re.sub(r"\s+", "_", safe)[:60]
+    return f"ai_{ts}_{safe}"
 
 
 def _get_superset_dataset_metadata(
@@ -149,8 +160,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "list_tables",
             "description": (
-                "List all tables in a specific schema. "
-                "Use this to discover which tables are available."
+                "List all tables (NOT views) in a specific schema. "
+                "Use this to discover which tables are available. "
+                "To also see database views, use list_views separately."
             ),
             "parameters": {
                 "type": "object",
@@ -167,12 +179,36 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "list_views",
+            "description": (
+                "List all database views in a specific schema. "
+                "Views are pre-defined SQL queries stored in the database — they often "
+                "contain important aggregations, joins, or filtered data. "
+                "Always check views alongside tables when exploring a schema. "
+                "You can use get_table_columns, sample_table_data, and execute_sql on views "
+                "the same way you would on tables."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schema_name": {
+                        "type": "string",
+                        "description": "The schema name to list views from",
+                    },
+                },
+                "required": ["schema_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_table_columns",
             "description": (
-                "Get column names, data types, nullable info, and metadata for a table. "
+                "Get column names, data types, nullable info, and metadata for a table or view. "
                 "Returns column comments/descriptions, verbose names, table comment, "
                 "and any predefined Superset metrics. "
-                "Use this to understand the structure AND business meaning of a table."
+                "Use this to understand the structure AND business meaning of a table or view."
             ),
             "parameters": {
                 "type": "object",
@@ -195,8 +231,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "sample_table_data",
             "description": (
-                "Get a sample of rows from a table (up to 20 rows). "
-                "Use this to understand what kind of data a table contains."
+                "Get a sample of rows from a table or view (up to 20 rows). "
+                "Use this to understand what kind of data a table or view contains."
             ),
             "parameters": {
                 "type": "object",
@@ -269,8 +305,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "name": "set_editor_sql",
             "description": (
                 "Set the SQL query in the user's SQL editor. "
-                "Use this when you have the final, tested query ready for the user. "
-                "This replaces the content of the active SQL editor tab."
+                "The SQL is validated by executing it against the database first. "
+                "If the SQL has errors (wrong column names, syntax errors, etc.), "
+                "this tool returns an error and the query is NOT placed in the editor. "
+                "In that case, fix the SQL and call this tool again. "
+                "Use this when you have the final query ready for the user."
             ),
             "parameters": {
                 "type": "object",
@@ -356,7 +395,827 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    # ------------------------------------------------------------------
+    # Dataset management tools
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "list_datasets",
+            "description": (
+                "List Superset datasets (registered tables/views/SQL). "
+                "Returns id, name, type (physical or virtual), schema, and database name. "
+                "Use this to find existing datasets before creating new ones, or to see "
+                "what data sources are already configured in Superset."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search": {
+                        "type": "string",
+                        "description": (
+                            "Optional search term to filter dataset names (case-insensitive). "
+                            "Leave empty to list all datasets for the current database."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_dataset",
+            "description": (
+                "Get full details of a Superset dataset by its ID. "
+                "Returns columns (with descriptions, verbose names), metrics, "
+                "SQL (for virtual datasets), description, and database info. "
+                "Use this to inspect how a dataset is configured before using or editing it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset_id": {
+                        "type": "integer",
+                        "description": "The Superset dataset ID (from list_datasets)",
+                    },
+                },
+                "required": ["dataset_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_dataset",
+            "description": (
+                "Update an existing Superset dataset. Can modify description, "
+                "column descriptions/verbose_names, SQL (for virtual datasets), "
+                "and metrics. ONLY use this when the user explicitly asks to edit "
+                "a dataset. All changes are logged."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset_id": {
+                        "type": "integer",
+                        "description": "The Superset dataset ID to update",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "New description for the dataset. Optional.",
+                    },
+                    "sql": {
+                        "type": "string",
+                        "description": (
+                            "New SQL for virtual datasets. Only works on virtual datasets. Optional."
+                        ),
+                    },
+                    "columns": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column_name": {"type": "string"},
+                                "verbose_name": {"type": "string"},
+                                "description": {"type": "string"},
+                            },
+                            "required": ["column_name"],
+                        },
+                        "description": (
+                            "Column metadata updates. Only specified fields are changed. Optional."
+                        ),
+                    },
+                },
+                "required": ["dataset_id"],
+            },
+        },
+    },
+    # ------------------------------------------------------------------
+    # Chart management tools
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "list_charts",
+            "description": (
+                "List existing Superset charts/visualizations. "
+                "Returns id, name, viz_type, dataset info, and last modified date. "
+                "Use this to find charts the user wants to inspect or modify."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search": {
+                        "type": "string",
+                        "description": (
+                            "Optional search term to filter chart names (case-insensitive)."
+                        ),
+                    },
+                    "dataset_id": {
+                        "type": "integer",
+                        "description": (
+                            "Optional: filter charts by dataset ID to find charts "
+                            "using a specific data source."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_chart",
+            "description": (
+                "Get full details of a Superset chart by its ID. "
+                "Returns chart name, viz_type, params (form_data), datasource info, "
+                "description, and the explore URL. "
+                "Use this to understand how a chart is configured."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chart_id": {
+                        "type": "integer",
+                        "description": "The Superset chart ID (from list_charts)",
+                    },
+                },
+                "required": ["chart_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_chart",
+            "description": (
+                "Update an existing Superset chart. Can modify name, description, "
+                "viz_type, params (form_data), and datasource. ONLY use this when "
+                "the user explicitly asks to edit a chart. All changes are logged."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chart_id": {
+                        "type": "integer",
+                        "description": "The Superset chart ID to update",
+                    },
+                    "chart_name": {
+                        "type": "string",
+                        "description": "New name for the chart. Optional.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "New description for the chart. Optional.",
+                    },
+                    "viz_type": {
+                        "type": "string",
+                        "enum": ["bar", "line", "pie", "table"],
+                        "description": "New chart type. Optional.",
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": (
+                            "Partial params/form_data to merge into the existing chart config. "
+                            "Only specified keys are overwritten. Optional."
+                        ),
+                    },
+                    "datasource_id": {
+                        "type": "integer",
+                        "description": "New dataset ID for the chart. Optional.",
+                    },
+                },
+                "required": ["chart_id"],
+            },
+        },
+    },
+    # ------------------------------------------------------------------
+    # Dashboard creation
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "create_dashboard",
+            "description": (
+                "Create a Superset dashboard from a list of saved chart IDs. "
+                "The charts will be arranged in a responsive grid layout. "
+                "Use this AFTER creating and saving charts with create_chart(save_chart=true). "
+                "The dashboard is saved permanently and accessible from the Dashboards menu."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dashboard_title": {
+                        "type": "string",
+                        "description": "Title for the dashboard (e.g. '[AI] HUNIKA Kft - Pénzügyi áttekintés')",
+                    },
+                    "chart_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "List of saved chart IDs to include in the dashboard.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional description for the dashboard.",
+                    },
+                },
+                "required": ["dashboard_title", "chart_ids"],
+            },
+        },
+    },
+    # ------------------------------------------------------------------
+    # Interactive tools (frontend-only actions)
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_user",
+            "description": (
+                "Ask the user a clarification question with predefined options. "
+                "Use this when the request is ambiguous, there are multiple valid "
+                "approaches, or you need confirmation before a significant action. "
+                "The user will see clickable option buttons and their choice will "
+                "be sent back to you as their next message."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question to ask the user.",
+                    },
+                    "options": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Short identifier for this option.",
+                                },
+                                "label": {
+                                    "type": "string",
+                                    "description": "Human-readable label shown on the button.",
+                                },
+                            },
+                            "required": ["id", "label"],
+                        },
+                        "description": "The options to present to the user (2-5 options).",
+                    },
+                },
+                "required": ["question", "options"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_todo",
+            "description": (
+                "Create or update a visible task checklist for the user. "
+                "Use this at the start of any multi-step task to show your plan, "
+                "and update it as you complete each step. The user sees this as a "
+                "real-time progress indicator. Each item has an id, text, and status."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Unique identifier for this todo item.",
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "description": "Description of the task step.",
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "done", "error"],
+                                    "description": "Current status of this step.",
+                                },
+                            },
+                            "required": ["id", "text", "status"],
+                        },
+                        "description": (
+                            "The full todo list. Send ALL items each time (not just changed ones). "
+                            "Update statuses as you progress through steps."
+                        ),
+                    },
+                },
+                "required": ["items"],
+            },
+        },
+    },
 ]
+
+
+# --------------------------------------------------------------------------
+# Code-driven discovery (no LLM, used in DISCOVER phase)
+# --------------------------------------------------------------------------
+
+
+def discover_schema(
+    database_id: int,
+    schema_name: str | None,
+    catalog: str | None,
+    user_question: str,
+    max_tables: int = 30,
+    max_columns_per_table: int = 80,
+) -> dict[str, Any]:
+    """Explore the database schema and optionally look up the target entity.
+
+    This is a deterministic, code-driven function (no LLM). It:
+    1. Lists all tables and views in the schema
+    2. Gets columns for each (up to max_tables)
+    3. Tries to identify a target entity mentioned in the question
+
+    Returns a dict ready to populate a PlanContext.
+    """
+    result: dict[str, Any] = {
+        "tables": {},
+        "views": {},
+        "entity_filter": None,
+        "entity_name": None,
+        "db_backend": "",
+    }
+
+    try:
+        database = _get_database(database_id)
+        result["db_backend"] = database.backend.lower() if database.backend else ""
+        is_mssql = "mssql" in result["db_backend"]
+
+        # Resolve schema
+        if not schema_name:
+            schema_name = "dbo" if is_mssql else "public"
+
+        # List tables
+        tables_result = tool_list_tables(database_id, schema_name, catalog)
+        table_names = tables_result.get("tables", [])[:max_tables]
+
+        # List views
+        views_result = tool_list_views(database_id, schema_name, catalog)
+        view_names = views_result.get("views", [])[:max_tables]
+
+        # Get columns for tables — skip tables that return 0 columns
+        for tbl in table_names:
+            cols_result = tool_get_table_columns(database_id, tbl, schema_name, catalog)
+            if "columns" in cols_result:
+                col_names = [c["name"] for c in cols_result["columns"]][:max_columns_per_table]
+                if col_names:
+                    result["tables"][tbl] = col_names
+                else:
+                    logger.debug("DISCOVER: skipping table '%s' — 0 columns", tbl)
+
+        # Get columns for views — skip views that return 0 columns
+        for vw in view_names:
+            cols_result = tool_get_table_columns(database_id, vw, schema_name, catalog)
+            if "columns" in cols_result:
+                col_names = [c["name"] for c in cols_result["columns"]][:max_columns_per_table]
+                if col_names:
+                    result["views"][vw] = col_names
+                else:
+                    logger.debug("DISCOVER: skipping view '%s' — 0 columns", vw)
+
+        # Try to find the target entity in the question
+        entity_name = _extract_entity_from_question(user_question)
+        if entity_name:
+            result["_extracted_entity"] = entity_name
+            entity_filter = _lookup_entity(
+                database_id, schema_name, catalog,
+                entity_name, result["tables"], is_mssql,
+            )
+            if entity_filter:
+                result["entity_filter"] = entity_filter
+                result["entity_name"] = entity_name
+
+                # Sample key column values from likely data tables so the LLM
+                # knows the real categorical values (not guesses)
+                sample_info = _sample_entity_data(
+                    database_id, schema_name, catalog,
+                    entity_filter, result["tables"], is_mssql,
+                )
+                if sample_info:
+                    result["sample_values"] = sample_info
+            else:
+                logger.info("DISCOVER: entity '%s' not found in any table", entity_name)
+                # Search for similar entities to offer as candidates
+                candidates = _search_entity_candidates(
+                    database_id, schema_name, catalog,
+                    entity_name, result["tables"], is_mssql,
+                )
+                if candidates:
+                    result["entity_candidates"] = candidates
+                    logger.info(
+                        "DISCOVER: found %d entity candidates for '%s': %s",
+                        len(candidates), entity_name,
+                        [c["name"] for c in candidates[:5]],
+                    )
+        else:
+            logger.info("DISCOVER: no entity extracted from question")
+
+    except Exception as ex:
+        logger.error("DISCOVER phase error: %s", ex, exc_info=True)
+
+    logger.info(
+        "DISCOVER: %d tables, %d views, entity=%s, filter=%s",
+        len(result["tables"]), len(result["views"]),
+        result["entity_name"], result["entity_filter"],
+    )
+    return result
+
+
+def _sample_entity_data(
+    database_id: int,
+    schema_name: str,
+    catalog: str | None,
+    entity_filter: str,
+    tables: dict[str, list[str]],
+    is_mssql: bool,
+    max_tables_to_sample: int = 3,
+) -> dict[str, dict[str, list[str]]]:
+    """Sample key categorical column values for the entity from likely data tables.
+
+    Returns: {table_name: {column_name: [distinct_values]}}
+
+    This helps the LLM know the real column values (e.g. "VII. ADÓZOTT EREDMÉNY")
+    instead of guessing ("BEVETEL", "KOLTSEG").
+    """
+    # Extract adoszam from the entity_filter if present
+    adoszam_match = re.search(r"\[adoszam\]\s*=\s*'([^']+)'", entity_filter)
+    d_b_id_match = re.search(r"\[d_b_belso_azonosito\]\s*=\s*(\d+)", entity_filter)
+
+    result: dict[str, dict[str, list[str]]] = {}
+
+    # Look for tables that have financial/reporting columns and contain entity data
+    financial_keywords = {"beszamolo", "redflag", "szamla", "eredmeny", "merleg"}
+    categorical_cols = re.compile(
+        r'(?:tipusa?|kodja|kategoria|tipus|jellege|forma)',
+        re.IGNORECASE,
+    )
+
+    sampled = 0
+    for tbl_name, columns in tables.items():
+        if sampled >= max_tables_to_sample:
+            break
+
+        # Only sample tables likely to have financial data
+        if not any(kw in tbl_name.lower() for kw in financial_keywords):
+            continue
+
+        # Find categorical columns to sample
+        cat_cols = [c for c in columns if categorical_cols.search(c)]
+        if not cat_cols:
+            continue
+
+        # Build WHERE clause for this table
+        where_parts = []
+        if "adoszam" in columns and adoszam_match:
+            where_parts.append(f"[adoszam] = '{adoszam_match.group(1)}'")
+        elif "d_b_belso_azonosito" in columns and d_b_id_match:
+            where_parts.append(f"[d_b_belso_azonosito] = {d_b_id_match.group(1)}")
+
+        if not where_parts:
+            continue
+
+        tbl_samples: dict[str, list[str]] = {}
+        for col in cat_cols[:5]:
+            try:
+                if is_mssql:
+                    sql = (
+                        f"SELECT DISTINCT TOP 20 [{col}]"
+                        f" FROM [{schema_name}].[{tbl_name}]"
+                        f" WHERE {' AND '.join(where_parts)}"
+                    )
+                else:
+                    sql = (
+                        f'SELECT DISTINCT "{col}"'
+                        f' FROM "{schema_name}"."{tbl_name}"'
+                        f" WHERE {' AND '.join(where_parts)} LIMIT 20"
+                    )
+                exec_result = tool_execute_sql(
+                    database_id, sql, schema_name, catalog, max_rows=20,
+                )
+                if exec_result.get("data"):
+                    vals = [str(row.get(col, "")) for row in exec_result["data"] if row.get(col)]
+                    if vals:
+                        tbl_samples[col] = vals
+            except Exception as ex:
+                logger.debug("DISCOVER: sample failed for %s.%s: %s", tbl_name, col, ex)
+
+        if tbl_samples:
+            result[tbl_name] = tbl_samples
+            sampled += 1
+            logger.info(
+                "DISCOVER: sampled %d columns from %s: %s",
+                len(tbl_samples), tbl_name, list(tbl_samples.keys()),
+            )
+
+    return result
+
+
+def _extract_entity_from_question(question: str) -> str | None:
+    """Best-effort extraction of a company/entity name from the user question.
+
+    Looks for patterns like quoted names, "Kft", "Zrt", "Bt." etc.
+    Handles mixed-case, hyphenated names (e.g. HUN-IKA Kft, HUNIKA Kft).
+    Also catches short alphanumeric names (4iG, OTP, MOL) and
+    common "Név + Bank/Group" patterns.
+    """
+    # Pattern 1: text in quotes (Hungarian or English quotes)
+    quoted = re.findall(r'[""„]([^""„"]+)["""]', question)
+    if quoted:
+        return quoted[0].strip()
+
+    # Pattern 2: Anchor on the company suffix (Kft, Zrt, etc.) and look
+    # backwards for 1-3 words that look like a name.
+    suffix_positions = list(re.finditer(
+        r'\b(Kft|Zrt|Bt|Nyrt|kft|zrt|bt|nyrt)\.?',
+        question,
+    ))
+    for suffix_match in suffix_positions:
+        prefix = question[:suffix_match.start()].rstrip()
+        words = prefix.split()
+        skip_words = {
+            "a", "az", "egy", "és", "vagy", "de", "is", "nem",
+            "hogy", "ha", "mint", "meg", "még", "le", "el", "ki",
+            "be", "fel", "ról", "ről", "nek", "nak", "ból", "ből",
+            "ban", "ben", "val", "vel", "ra", "re", "on", "en", "ön",
+            "ot", "at", "et", "öt", "hez", "hoz", "höz",
+        }
+        name_words: list[str] = []
+        for w in reversed(words):
+            if w.lower() in skip_words or (w[0].islower() and '-' not in w):
+                break
+            name_words.insert(0, w)
+            if len(name_words) >= 3:
+                break
+
+        if name_words:
+            suffix_text = suffix_match.group(0)
+            entity = " ".join(name_words) + " " + suffix_text
+            logger.info("DISCOVER: extracted entity '%s' from question", entity)
+            return entity
+
+    # Pattern 3: ALL CAPS word (3+ chars), possibly with hyphens
+    caps = re.findall(
+        r'\b([A-ZÁÉÍÓÖŐÚÜŰ][-A-ZÁÉÍÓÖŐÚÜŰ]{2,}(?:\s+[A-ZÁÉÍÓÖŐÚÜŰ][-A-ZÁÉÍÓÖŐÚÜŰ]*)*)\b',
+        question,
+    )
+    skip_kw = {"SQL", "SELECT", "FROM", "WHERE", "AND", "DASHBOARD", "CHART", "TABLE"}
+    caps = [c for c in caps if c not in skip_kw]
+    if caps:
+        return caps[0].strip()
+
+    # Pattern 4: Short alphanumeric company names (2-6 chars, at least one
+    # uppercase letter, may start with digit). Catches: 4iG, OTP, MOL, CIG,
+    # T-Systems, K&H, etc.
+    # Look for tokens that: (a) contain at least one uppercase letter,
+    # (b) are 2-6 chars, (c) are NOT common Hungarian/English words.
+    skip_short = {
+        "IT", "AI", "EU", "DB", "OK", "HU", "EN", "DE",
+        "EZ", "AZ", "HA", "IS", "NE", "MI", "TE",
+    }
+    short_candidates = re.findall(
+        r'\b([A-Za-z0-9][-A-Za-z0-9&]{1,5})\b',
+        question,
+    )
+    for cand in short_candidates:
+        upper_count = sum(1 for c in cand if c.isupper())
+        if upper_count >= 1 and cand.upper() not in skip_kw and cand.upper() not in skip_short:
+            # Must look "name-like": either mostly uppercase or digit+uppercase mix
+            alpha_chars = [c for c in cand if c.isalpha()]
+            if alpha_chars and (upper_count / len(alpha_chars)) >= 0.3:
+                logger.info("DISCOVER: extracted short entity '%s' from question", cand)
+                return cand
+
+    return None
+
+
+def _lookup_entity(
+    database_id: int,
+    schema_name: str,
+    catalog: str | None,
+    entity_name: str,
+    tables: dict[str, list[str]],
+    is_mssql: bool,
+) -> str | None:
+    """Search for entity_name in likely name-columns and return a WHERE filter.
+
+    Checks columns that look like company names (e.g. 'nev', 'name', 'cegnev',
+    'ugyfel_nev') across the discovered tables.
+
+    Generates multiple LIKE variants for the entity name to handle hyphens,
+    spaces, and company suffixes (e.g. "HUNIKA Kft" → search for "HUNIKA",
+    "HUN-IKA", "HUN IKA").
+
+    If the search returns MULTIPLE distinct entities, returns None so the
+    caller can offer them via ask_user. Only returns a filter when the match
+    is unambiguous (1 entity).
+
+    Returns a multi-line filter description that includes the source table,
+    all found identifiers, and an exact name — so the LLM can use the right
+    column for each table it queries.
+    """
+    name_column_patterns = re.compile(
+        r'(?:nev|name|cegnev|ceg_nev|ugyfel_nev|partner_nev|company|partner_name'
+        r'|bejegyzett_nev|rovid_nev)',
+        re.IGNORECASE,
+    )
+    id_column_patterns = re.compile(
+        r'(?:_id$|_azonosito$|belso_azonosito$|^id$|adoszam)',
+        re.IGNORECASE,
+    )
+
+    # Build LIKE search variants from entity_name
+    core_name = re.sub(
+        r'\s+(?:Kft|Zrt|Bt|Nyrt|kft|zrt|bt|nyrt)\.?\s*$', '', entity_name,
+    ).strip()
+    search_variants = {core_name}
+    if core_name != entity_name:
+        search_variants.add(entity_name)
+    if '-' in core_name:
+        search_variants.add(core_name.replace('-', ''))
+        search_variants.add(core_name.replace('-', ' '))
+    # Only generate hyphen variants for short single-word names (avoids
+    # explosion for multi-word names like "4iG a Digitális Társadalomért...")
+    if '-' not in core_name and ' ' not in core_name and 5 <= len(core_name) <= 12:
+        for split_pos in range(2, len(core_name) - 1):
+            variant = core_name[:split_pos] + '-' + core_name[split_pos:]
+            search_variants.add(variant)
+
+    logger.info(
+        "DISCOVER: entity lookup variants for '%s': %s",
+        entity_name, search_variants,
+    )
+
+    # Preferred table for lookup: alap_fajl or similar master tables
+    preferred_tables = ["alap_fajl", "v1_Cég", "v1_ceg"]
+    sorted_tables = sorted(
+        tables.items(),
+        key=lambda t: 0 if t[0] in preferred_tables else 1,
+    )
+
+    for table_name, columns in sorted_tables:
+        name_cols = [c for c in columns if name_column_patterns.search(c)]
+        if not name_cols:
+            continue
+
+        id_cols = [c for c in columns if id_column_patterns.search(c)]
+
+        for name_col in name_cols[:2]:
+            for variant in search_variants:
+                try:
+                    select_cols = [f"[{name_col}]" if is_mssql else f'"{name_col}"']
+                    for ic in id_cols[:5]:
+                        col_expr = f"[{ic}]" if is_mssql else f'"{ic}"'
+                        if col_expr not in select_cols:
+                            select_cols.append(col_expr)
+
+                    # Query multiple rows to check for ambiguity
+                    if is_mssql:
+                        sql = (
+                            f"SELECT DISTINCT TOP 10 {', '.join(select_cols)}"
+                            f" FROM [{schema_name}].[{table_name}]"
+                            f" WHERE [{name_col}] LIKE '%{variant}%'"
+                        )
+                    else:
+                        sql = (
+                            f"SELECT DISTINCT {', '.join(select_cols)}"
+                            f' FROM "{schema_name}"."{table_name}"'
+                            f" WHERE \"{name_col}\" ILIKE '%{variant}%' LIMIT 10"
+                        )
+
+                    exec_result = tool_execute_sql(
+                        database_id, sql, schema_name, catalog, max_rows=10,
+                    )
+
+                    rows = exec_result.get("data", [])
+                    if not rows:
+                        continue
+
+                    # Deduplicate by the name column
+                    unique_names = {str(r.get(name_col, "")).strip() for r in rows}
+                    unique_names.discard("")
+
+                    if len(unique_names) == 1:
+                        # Unambiguous match — use it
+                        row = rows[0]
+                        logger.info(
+                            "DISCOVER: entity '%s' found (unique) via variant '%s' "
+                            "in %s.%s: %s",
+                            entity_name, variant, table_name, name_col, row,
+                        )
+                        parts = [f"Found in table: {table_name}"]
+                        for col_name, col_val in row.items():
+                            if is_mssql:
+                                parts.append(f"  [{col_name}] = {col_val!r}")
+                            else:
+                                parts.append(f'  "{col_name}" = {col_val!r}')
+                        filter_desc = "\n".join(parts)
+                        logger.info("DISCOVER: entity filter:\n%s", filter_desc)
+                        return filter_desc
+
+                    # Multiple matches — ambiguous, return None to trigger ask_user
+                    logger.info(
+                        "DISCOVER: entity '%s' has %d matches in %s.%s: %s — "
+                        "returning None for ask_user",
+                        entity_name, len(unique_names), table_name, name_col,
+                        list(unique_names)[:5],
+                    )
+                    return None
+
+                except Exception as ex:
+                    logger.debug(
+                        "Entity lookup failed for %s.%s (variant '%s'): %s",
+                        table_name, name_col, variant, ex,
+                    )
+                    continue
+
+    return None
+
+
+def _search_entity_candidates(
+    database_id: int,
+    schema_name: str,
+    catalog: str | None,
+    entity_name: str,
+    tables: dict[str, list[str]],
+    is_mssql: bool,
+    max_candidates: int = 8,
+) -> list[dict[str, str]]:
+    """Search for entities similar to entity_name across name columns.
+
+    Returns a list of dicts: [{"name": "...", "table": "...", "filter": "..."}]
+    Used when _lookup_entity fails — offers candidates for ask_user.
+    """
+    name_column_patterns = re.compile(
+        r'(?:nev|name|cegnev|ceg_nev|ugyfel_nev|partner_nev|company|partner_name'
+        r'|bejegyzett_nev|rovid_nev)',
+        re.IGNORECASE,
+    )
+
+    # Core search term: strip suffixes, use first meaningful word(s)
+    core = re.sub(
+        r'\s+(?:Kft|Zrt|Bt|Nyrt|kft|zrt|bt|nyrt)\.?\s*$', '', entity_name,
+    ).strip()
+
+    candidates: list[dict[str, str]] = []
+    seen_names: set[str] = set()
+
+    for table_name, columns in tables.items():
+        name_cols = [c for c in columns if name_column_patterns.search(c)]
+        if not name_cols:
+            continue
+
+        for name_col in name_cols[:1]:
+            try:
+                if is_mssql:
+                    sql = (
+                        f"SELECT DISTINCT TOP {max_candidates} [{name_col}]"
+                        f" FROM [{schema_name}].[{table_name}]"
+                        f" WHERE [{name_col}] LIKE '%{core}%'"
+                    )
+                else:
+                    sql = (
+                        f'SELECT DISTINCT "{name_col}"'
+                        f' FROM "{schema_name}"."{table_name}"'
+                        f" WHERE \"{name_col}\" ILIKE '%{core}%'"
+                        f" LIMIT {max_candidates}"
+                    )
+
+                exec_result = tool_execute_sql(
+                    database_id, sql, schema_name, catalog, max_rows=max_candidates,
+                )
+
+                if exec_result.get("data"):
+                    for row in exec_result["data"]:
+                        name_val = str(row.get(name_col, "")).strip()
+                        if name_val and name_val not in seen_names:
+                            seen_names.add(name_val)
+                            candidates.append({
+                                "name": name_val,
+                                "table": table_name,
+                                "column": name_col,
+                            })
+
+            except Exception as ex:
+                logger.debug(
+                    "Entity search failed for %s.%s: %s",
+                    table_name, name_col, ex,
+                )
+
+        if len(candidates) >= max_candidates:
+            break
+
+    return candidates[:max_candidates]
 
 
 # --------------------------------------------------------------------------
@@ -398,6 +1257,28 @@ def tool_list_tables(
     except Exception as ex:
         logger.error(
             "Error listing tables for db %s, schema %s: %s",
+            database_id,
+            schema_name,
+            ex,
+        )
+        return {"error": str(ex)}
+
+
+def tool_list_views(
+    database_id: int, schema_name: str, catalog: str | None = None
+) -> dict[str, Any]:
+    """List all views in a specific schema."""
+    try:
+        database = _get_database(database_id)
+        views = database.get_all_view_names_in_schema(
+            catalog=catalog, schema=schema_name
+        )
+        # views is a set of (view_name, schema, catalog) tuples
+        view_names = sorted(v[0] for v in views)
+        return {"views": view_names, "schema": schema_name}
+    except Exception as ex:
+        logger.error(
+            "Error listing views for db %s, schema %s: %s",
             database_id,
             schema_name,
             ex,
@@ -613,6 +1494,70 @@ def _validate_sql_syntax(sql: str, dialect: str | None = None) -> str | None:
         return None
 
 
+def tool_set_editor_sql(
+    database_id: int,
+    sql: str,
+    schema_name: str | None = None,
+    catalog: str | None = None,
+) -> dict[str, Any]:
+    """
+    Validate the SQL by executing it (LIMIT 1), then return the frontend
+    action so it gets placed in the editor.  If the SQL fails, return the
+    error to the LLM so it can fix the query before trying again.
+    """
+    sql_stripped = sql.strip().upper()
+
+    # Reject DDL statements — only SELECT queries are allowed
+    ddl_keywords = ("CREATE", "ALTER", "DROP", "INSERT", "UPDATE", "DELETE", "EXEC", "TRUNCATE")
+    if any(sql_stripped.startswith(kw) for kw in ddl_keywords):
+        logger.warning(
+            "set_editor_sql REJECTED DDL statement: %s", sql[:200],
+        )
+        return {
+            "error": (
+                "DDL statements (CREATE, ALTER, DROP, etc.) are NOT allowed. "
+                "Only SELECT queries can be placed in the editor. "
+                "Rewrite your query as a SELECT statement."
+            ),
+        }
+
+    is_select = sql_stripped.startswith("SELECT") or sql_stripped.startswith("WITH")
+
+    if is_select:
+        # Wrap in a validation query that returns at most 1 row
+        database = _get_database(database_id)
+        db_backend = database.backend.lower() if database.backend else ""
+        if "mssql" in db_backend:
+            validation_sql = f"SELECT TOP 1 * FROM ({sql}) AS _validation_check"
+        else:
+            validation_sql = f"SELECT * FROM ({sql}) AS _validation_check LIMIT 1"
+
+        try:
+            from superset_core.queries.types import QueryOptions
+            options = QueryOptions(
+                catalog=catalog,
+                schema=schema_name,
+                limit=1,
+            )
+            database.execute(validation_sql, options)
+            logger.info("set_editor_sql validation passed for SQL (%d chars)", len(sql))
+        except Exception as ex:
+            logger.warning(
+                "set_editor_sql validation FAILED: %s\nSQL: %s", ex, sql[:500]
+            )
+            return {
+                "error": (
+                    f"SQL validation failed — this query has errors and was NOT "
+                    f"sent to the editor. Fix the query and try set_editor_sql again. "
+                    f"DB error: {str(ex)}"
+                ),
+                "sql": sql,
+            }
+
+    # Validation passed (or non-SELECT) — send to frontend
+    return {"action": "set_editor_sql", "sql": sql}
+
+
 def tool_execute_sql(
     database_id: int,
     sql: str,
@@ -653,10 +1598,333 @@ def tool_execute_sql(
             "columns": columns,
             "row_count": len(rows),
             "data": rows,
+            "is_empty": len(rows) == 0,
         }
     except Exception as ex:
         logger.error("Error executing SQL in db %s: %s\nSQL: %s", database_id, ex, sql)
         return {"error": str(ex), "sql": sql}
+
+
+# --------------------------------------------------------------------------
+# Dataset management
+# --------------------------------------------------------------------------
+
+
+def tool_list_datasets(
+    database_id: int,
+    search: str | None = None,
+) -> dict[str, Any]:
+    """List Superset datasets, optionally filtered by search term."""
+    try:
+        query = db.session.query(SqlaTable).filter(
+            SqlaTable.database_id == database_id,
+        )
+        if search:
+            query = query.filter(
+                SqlaTable.table_name.ilike(f"%{search}%")
+            )
+        query = query.order_by(SqlaTable.table_name)
+        datasets = query.limit(100).all()
+
+        results = []
+        for ds in datasets:
+            is_virtual = bool(ds.sql)
+            results.append({
+                "id": ds.id,
+                "name": ds.table_name,
+                "type": "virtual" if is_virtual else "physical",
+                "schema": ds.schema or None,
+                "description": ds.description or None,
+            })
+
+        return {"datasets": results, "count": len(results)}
+    except Exception as ex:
+        logger.error("Error listing datasets for db %s: %s", database_id, ex)
+        return {"error": str(ex)}
+
+
+def tool_get_dataset(dataset_id: int) -> dict[str, Any]:
+    """Get full details of a Superset dataset by ID."""
+    try:
+        dataset = db.session.query(SqlaTable).filter_by(id=dataset_id).first()
+        if not dataset:
+            return {"error": f"Dataset with id={dataset_id} not found"}
+
+        # Column metadata
+        columns_info = []
+        for col in dataset.columns:
+            entry: dict[str, Any] = {
+                "column_name": col.column_name,
+                "type": col.type or "unknown",
+                "is_active": col.is_active if hasattr(col, "is_active") else True,
+            }
+            if col.verbose_name:
+                entry["verbose_name"] = col.verbose_name
+            if col.description:
+                entry["description"] = col.description
+            if col.filterable is not None:
+                entry["filterable"] = col.filterable
+            if col.groupby is not None:
+                entry["groupby"] = col.groupby
+            columns_info.append(entry)
+
+        # Metrics
+        metrics_info = []
+        for m in dataset.metrics:
+            metric_entry: dict[str, Any] = {
+                "metric_name": m.metric_name,
+                "expression": m.expression,
+            }
+            if m.verbose_name:
+                metric_entry["verbose_name"] = m.verbose_name
+            if m.description:
+                metric_entry["description"] = m.description
+            if m.metric_type:
+                metric_entry["metric_type"] = m.metric_type
+            metrics_info.append(metric_entry)
+
+        result: dict[str, Any] = {
+            "id": dataset.id,
+            "name": dataset.table_name,
+            "type": "virtual" if dataset.sql else "physical",
+            "schema": dataset.schema or None,
+            "database_id": dataset.database_id,
+            "description": dataset.description or None,
+            "columns": columns_info,
+            "metrics": metrics_info,
+        }
+
+        if dataset.sql:
+            result["sql"] = dataset.sql
+
+        return result
+    except Exception as ex:
+        logger.error("Error getting dataset %s: %s", dataset_id, ex)
+        return {"error": str(ex)}
+
+
+def tool_update_dataset(
+    dataset_id: int,
+    description: str | None = None,
+    sql: str | None = None,
+    columns: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Update an existing Superset dataset. Logs all changes."""
+    try:
+        dataset = db.session.query(SqlaTable).filter_by(id=dataset_id).first()
+        if not dataset:
+            return {"error": f"Dataset with id={dataset_id} not found"}
+
+        changes: list[str] = []
+
+        # Update description
+        if description is not None:
+            old_desc = dataset.description
+            dataset.description = description
+            changes.append(f"description: '{old_desc}' -> '{description}'")
+
+        # Update SQL (virtual datasets only)
+        if sql is not None:
+            if not dataset.sql:
+                return {"error": "Cannot set SQL on a physical dataset — only virtual datasets have SQL"}
+            old_sql = dataset.sql
+            dataset.sql = sql
+            changes.append(f"sql updated (was {len(old_sql or '')} chars, now {len(sql)} chars)")
+
+        # Update column metadata
+        if columns:
+            col_map = {c.column_name: c for c in dataset.columns}
+            for col_update in columns:
+                col_name = col_update.get("column_name")
+                if not col_name or col_name not in col_map:
+                    changes.append(f"column '{col_name}' not found, skipped")
+                    continue
+                col_obj = col_map[col_name]
+                if "verbose_name" in col_update:
+                    col_obj.verbose_name = col_update["verbose_name"]
+                    changes.append(f"column '{col_name}' verbose_name set to '{col_update['verbose_name']}'")
+                if "description" in col_update:
+                    col_obj.description = col_update["description"]
+                    changes.append(f"column '{col_name}' description updated")
+
+        if not changes:
+            return {"message": "No changes specified", "dataset_id": dataset_id}
+
+        db.session.commit()
+        logger.info(
+            "Updated dataset %s (%s): %s",
+            dataset_id, dataset.table_name, "; ".join(changes),
+        )
+
+        return {
+            "message": "Dataset updated successfully",
+            "dataset_id": dataset_id,
+            "dataset_name": dataset.table_name,
+            "changes": changes,
+        }
+    except Exception as ex:
+        db.session.rollback()
+        logger.error("Error updating dataset %s: %s", dataset_id, ex, exc_info=True)
+        return {"error": f"Failed to update dataset: {str(ex)}"}
+
+
+# --------------------------------------------------------------------------
+# Chart management (read / update existing charts)
+# --------------------------------------------------------------------------
+
+
+def tool_list_charts(
+    search: str | None = None,
+    dataset_id: int | None = None,
+) -> dict[str, Any]:
+    """List existing Superset charts, optionally filtered."""
+    try:
+        from superset.models.slice import Slice
+
+        query = db.session.query(Slice)
+
+        if search:
+            query = query.filter(Slice.slice_name.ilike(f"%{search}%"))
+        if dataset_id is not None:
+            query = query.filter(
+                Slice.datasource_id == dataset_id,
+                Slice.datasource_type == "table",
+            )
+
+        query = query.order_by(Slice.changed_on.desc())
+        charts = query.limit(50).all()
+
+        results = []
+        for chart in charts:
+            results.append({
+                "id": chart.id,
+                "name": chart.slice_name,
+                "viz_type": chart.viz_type,
+                "datasource_id": chart.datasource_id,
+                "datasource_type": chart.datasource_type,
+                "description": chart.description or None,
+                "changed_on": str(chart.changed_on) if chart.changed_on else None,
+                "url": f"/explore/?slice_id={chart.id}",
+            })
+
+        return {"charts": results, "count": len(results)}
+    except Exception as ex:
+        logger.error("Error listing charts: %s", ex)
+        return {"error": str(ex)}
+
+
+def tool_get_chart(chart_id: int) -> dict[str, Any]:
+    """Get full details of a Superset chart by ID."""
+    try:
+        import json as stdlib_json
+        from superset.models.slice import Slice
+
+        chart = db.session.query(Slice).filter_by(id=chart_id).first()
+        if not chart:
+            return {"error": f"Chart with id={chart_id} not found"}
+
+        # Parse params JSON
+        params = {}
+        if chart.params:
+            try:
+                params = stdlib_json.loads(chart.params)
+            except stdlib_json.JSONDecodeError:
+                params = {"_raw": chart.params}
+
+        result: dict[str, Any] = {
+            "id": chart.id,
+            "name": chart.slice_name,
+            "viz_type": chart.viz_type,
+            "datasource_id": chart.datasource_id,
+            "datasource_type": chart.datasource_type,
+            "description": chart.description or None,
+            "params": params,
+            "url": f"/explore/?slice_id={chart.id}",
+            "changed_on": str(chart.changed_on) if chart.changed_on else None,
+        }
+
+        # Add datasource name if available
+        if chart.datasource_name:
+            result["datasource_name"] = chart.datasource_name
+
+        return result
+    except Exception as ex:
+        logger.error("Error getting chart %s: %s", chart_id, ex)
+        return {"error": str(ex)}
+
+
+def tool_update_chart(
+    chart_id: int,
+    chart_name: str | None = None,
+    description: str | None = None,
+    viz_type: str | None = None,
+    params: dict[str, Any] | None = None,
+    datasource_id: int | None = None,
+) -> dict[str, Any]:
+    """Update an existing Superset chart. Logs all changes."""
+    try:
+        import json as stdlib_json
+        from superset.models.slice import Slice
+
+        chart = db.session.query(Slice).filter_by(id=chart_id).first()
+        if not chart:
+            return {"error": f"Chart with id={chart_id} not found"}
+
+        changes: list[str] = []
+
+        if chart_name is not None:
+            old_name = chart.slice_name
+            chart.slice_name = chart_name
+            changes.append(f"name: '{old_name}' -> '{chart_name}'")
+
+        if description is not None:
+            chart.description = description
+            changes.append("description updated")
+
+        if viz_type is not None:
+            superset_viz = VIZ_TYPE_MAP.get(viz_type, viz_type)
+            old_viz = chart.viz_type
+            chart.viz_type = superset_viz
+            changes.append(f"viz_type: '{old_viz}' -> '{superset_viz}'")
+
+        if params is not None:
+            # Merge new params into existing params
+            existing_params = {}
+            if chart.params:
+                try:
+                    existing_params = stdlib_json.loads(chart.params)
+                except stdlib_json.JSONDecodeError:
+                    existing_params = {}
+            existing_params.update(params)
+            chart.params = stdlib_json.dumps(existing_params)
+            changes.append(f"params updated ({len(params)} keys changed)")
+
+        if datasource_id is not None:
+            old_ds = chart.datasource_id
+            chart.datasource_id = datasource_id
+            chart.datasource_type = "table"
+            changes.append(f"datasource_id: {old_ds} -> {datasource_id}")
+
+        if not changes:
+            return {"message": "No changes specified", "chart_id": chart_id}
+
+        db.session.commit()
+        logger.info(
+            "Updated chart %s (%s): %s",
+            chart_id, chart.slice_name, "; ".join(changes),
+        )
+
+        return {
+            "message": "Chart updated successfully",
+            "chart_id": chart_id,
+            "chart_name": chart.slice_name,
+            "changes": changes,
+            "url": f"/explore/?slice_id={chart.id}",
+        }
+    except Exception as ex:
+        db.session.rollback()
+        logger.error("Error updating chart %s: %s", chart_id, ex, exc_info=True)
+        return {"error": f"Failed to update chart: {str(ex)}"}
 
 
 # --------------------------------------------------------------------------
@@ -809,6 +2077,80 @@ def _generate_explore_url(
     return f"/explore/?form_data_key={form_data_key}"
 
 
+def _validate_chart_sql(
+    database_id: int,
+    sql: str,
+    schema_name: str | None = None,
+    catalog: str | None = None,
+) -> dict[str, Any] | None:
+    """Validate chart SQL by executing it with TOP 1 / LIMIT 1.
+
+    Returns None on success.  On failure returns an error dict that includes
+    the DB error AND the column list of any tables referenced, so the LLM
+    can self-correct without extra tool calls.
+    """
+    try:
+        database = _get_database(database_id)
+        db_backend = database.backend.lower() if database.backend else ""
+        if "mssql" in db_backend:
+            validation_sql = f"SELECT TOP 1 * FROM ({sql}) AS _val"
+        else:
+            validation_sql = f"SELECT * FROM ({sql}) AS _val LIMIT 1"
+
+        from superset_core.queries.types import QueryOptions
+        options = QueryOptions(catalog=catalog, schema=schema_name, limit=1)
+        database.execute(validation_sql, options)
+        return None  # success
+    except Exception as ex:
+        error_msg = str(ex)
+        logger.warning("create_chart SQL validation FAILED: %s", error_msg[:300])
+
+        # Try to extract referenced table names and return their columns
+        hint_lines: list[str] = []
+        table_refs = _extract_table_refs(sql)
+        if table_refs:
+            for tbl in table_refs[:4]:  # max 4 tables
+                try:
+                    cols = tool_get_table_columns(
+                        database_id, tbl, schema_name or "dbo", catalog
+                    )
+                    if "columns" in cols:
+                        col_names = [c["name"] for c in cols["columns"]]
+                        hint_lines.append(f"  {tbl}: {', '.join(col_names)}")
+                except Exception:
+                    pass
+
+        hint = ""
+        if hint_lines:
+            hint = (
+                "\n\nAvailable columns in referenced tables:\n"
+                + "\n".join(hint_lines)
+                + "\n\nFix the column names and call create_chart again."
+            )
+
+        return {
+            "error": (
+                f"SQL validation failed — chart NOT created. "
+                f"DB error: {error_msg}{hint}"
+            )
+        }
+
+
+def _extract_table_refs(sql: str) -> list[str]:
+    """Best-effort extraction of table/view names from SQL (FROM / JOIN)."""
+    pattern = r'(?:FROM|JOIN)\s+(?:\[?dbo\]?\.)?\[?(\w+)\]?'
+    matches = re.findall(pattern, sql, re.IGNORECASE)
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    result: list[str] = []
+    for m in matches:
+        low = m.lower()
+        if low not in seen and low not in ("select", "as", "on", "where"):
+            seen.add(low)
+            result.append(m)
+    return result
+
+
 def tool_create_chart(
     database_id: int,
     sql: str,
@@ -824,9 +2166,6 @@ def tool_create_chart(
 ) -> dict[str, Any]:
     """Create a chart from a SQL query and return an explore URL."""
     try:
-        # Sanitize dataset name from chart name
-        safe_name = f"ai_{chart_name.replace(' ', '_')[:80]}"
-
         # MSSQL: strip ORDER BY from virtual dataset SQL — MSSQL disallows
         # ORDER BY in subqueries/derived tables unless TOP/OFFSET is present,
         # and Superset wraps virtual dataset SQL in a subquery for charting.
@@ -837,6 +2176,18 @@ def tool_create_chart(
                 logger.info(
                     "Stripped ORDER BY from chart SQL for MSSQL compatibility"
                 )
+
+        # Pre-validate the FINAL SQL (after ORDER BY stripping) before
+        # creating a dataset — catches column errors early and returns
+        # available column names for self-correction.
+        validation_error = _validate_chart_sql(
+            database_id, dataset_sql, schema_name, catalog
+        )
+        if validation_error:
+            return validation_error
+
+        # Standardised AI naming: ai_YYYYMMDD_HHMM_Topic
+        safe_name = _ai_resource_name(chart_name)
 
         # Step 1: Try to find existing dataset, else create virtual one
         dataset = _find_existing_dataset(database_id, safe_name, schema_name)
@@ -861,9 +2212,14 @@ def tool_create_chart(
             from superset.commands.chart.create import CreateChartCommand
             from superset.utils import json as superset_json
 
+            # Enforce naming convention on saved charts
+            saved_chart_name = (
+                chart_name if chart_name.startswith("ai_")
+                else _ai_resource_name(chart_name)
+            )
             chart = CreateChartCommand(
                 {
-                    "slice_name": chart_name,
+                    "slice_name": saved_chart_name,
                     "viz_type": form_data["viz_type"],
                     "datasource_id": dataset_id_val,
                     "datasource_type": "table",
@@ -873,7 +2229,7 @@ def tool_create_chart(
             explore_url = f"/explore/?slice_id={chart.id}"
             logger.info(
                 "Saved chart: id=%s, name=%s, url=%s",
-                chart.id, chart_name, explore_url,
+                chart.id, saved_chart_name, explore_url,
             )
         else:
             explore_url = _generate_explore_url(dataset_id_val, form_data)
@@ -882,17 +2238,141 @@ def tool_create_chart(
                 chart_name, explore_url,
             )
 
-        return {
+        result_data: dict[str, Any] = {
             "action": "open_chart",
             "url": explore_url,
-            "chart_name": chart_name,
+            "chart_name": saved_chart_name if save_chart else chart_name,
+            "dataset_name": safe_name,
             "viz_type": viz_type,
             "saved": save_chart,
         }
+        if save_chart:
+            result_data["chart_id"] = chart.id
+        return result_data
 
     except Exception as ex:
         logger.error("Error creating chart '%s': %s", chart_name, ex, exc_info=True)
         return {"error": f"Failed to create chart: {str(ex)}"}
+
+
+def tool_create_dashboard(
+    chart_ids: list[int],
+    dashboard_title: str,
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Create a Superset dashboard from saved chart IDs."""
+    try:
+        from superset.commands.dashboard.create import CreateDashboardCommand
+        from superset.utils import json as superset_json
+
+        # Enforce naming convention
+        final_title = (
+            dashboard_title if dashboard_title.startswith("ai_")
+            else _ai_resource_name(dashboard_title)
+        )
+
+        # Build v2 grid layout — 2 charts per row, 6 units wide each
+        position_json: dict[str, Any] = {
+            "DASHBOARD_VERSION_KEY": "v2",
+            "ROOT_ID": {"type": "ROOT", "id": "ROOT_ID", "children": ["GRID_ID"]},
+            "GRID_ID": {"type": "GRID", "id": "GRID_ID", "children": []},
+            "HEADER_ID": {"type": "HEADER", "id": "HEADER_ID", "meta": {"text": final_title}},
+        }
+
+        # Resolve chart slice names for better labels
+        chart_names: dict[int, str] = {}
+        try:
+            from superset.models.slice import Slice
+            for cid in chart_ids:
+                s = db.session.query(Slice).filter_by(id=cid).first()
+                if s:
+                    chart_names[cid] = s.slice_name
+        except Exception:
+            pass
+
+        for idx, chart_id in enumerate(chart_ids):
+            row_idx = idx // 2
+            row_key = f"ROW-ai-{row_idx}"
+            chart_key = f"CHART-ai-{idx}"
+
+            # Create ROW only for the first chart in each pair
+            if row_key not in position_json:
+                position_json[row_key] = {
+                    "type": "ROW",
+                    "id": row_key,
+                    "children": [],
+                    "meta": {"background": "BACKGROUND_TRANSPARENT"},
+                }
+                position_json["GRID_ID"]["children"].append(row_key)
+
+            position_json[chart_key] = {
+                "type": "CHART",
+                "id": chart_key,
+                "children": [],
+                "meta": {
+                    "chartId": chart_id,
+                    "width": 6,
+                    "height": 50,
+                    "sliceName": chart_names.get(chart_id, f"Chart {idx + 1}"),
+                },
+            }
+            position_json[row_key]["children"].append(chart_key)
+
+        payload: dict[str, Any] = {
+            "dashboard_title": final_title,
+            "position_json": superset_json.dumps(position_json),
+            "json_metadata": superset_json.dumps({
+                "default_filters": "{}",
+                "expanded_slices": {},
+                "refresh_frequency": 0,
+                "timed_refresh_immune_slices": [],
+                "color_scheme": "",
+            }),
+        }
+        if description:
+            payload["description"] = description
+
+        dashboard = CreateDashboardCommand(payload).run()
+
+        # Associate charts (slices) with the dashboard via the
+        # many-to-many relationship — position_json alone isn't enough
+        try:
+            from superset.models.slice import Slice
+            slices = []
+            for cid in chart_ids:
+                s = db.session.query(Slice).filter_by(id=cid).first()
+                if s:
+                    slices.append(s)
+                else:
+                    logger.warning(
+                        "Dashboard %s: chart id=%s not found", dashboard.id, cid,
+                    )
+            dashboard.slices = slices
+        except Exception as ex:
+            logger.warning(
+                "Dashboard %s: failed to associate slices: %s",
+                dashboard.id, ex,
+            )
+
+        db.session.commit()
+
+        dashboard_url = f"/superset/dashboard/{dashboard.id}/"
+        logger.info(
+            "Created dashboard: id=%s, title=%s, charts=%s, url=%s",
+            dashboard.id, final_title, chart_ids, dashboard_url,
+        )
+
+        return {
+            "action": "open_dashboard",
+            "dashboard_id": dashboard.id,
+            "dashboard_title": final_title,
+            "dashboard_url": dashboard_url,
+            "chart_count": len(chart_ids),
+        }
+
+    except Exception as ex:
+        logger.error("Error creating dashboard '%s': %s", dashboard_title, ex, exc_info=True)
+        return {"error": f"Failed to create dashboard: {str(ex)}"}
 
 
 # --------------------------------------------------------------------------
@@ -900,10 +2380,10 @@ def tool_create_chart(
 # --------------------------------------------------------------------------
 
 # Actions that are passed to the frontend without backend execution
-FRONTEND_ACTIONS = {"set_editor_sql"}
+FRONTEND_ACTIONS: set[str] = {"ask_user", "update_todo"}
 
 # Tools whose results contain actions to relay to the frontend
-TOOLS_WITH_ACTIONS = {"set_editor_sql", "create_chart"}
+TOOLS_WITH_ACTIONS = {"set_editor_sql", "create_chart", "create_dashboard", "ask_user", "update_todo"}
 
 
 def execute_tool(
@@ -936,6 +2416,13 @@ def execute_tool(
             catalog=catalog,
         )
 
+    if tool_name == "list_views":
+        return tool_list_views(
+            database_id,
+            schema_name=arguments["schema_name"],
+            catalog=catalog,
+        )
+
     if tool_name == "get_table_columns":
         return tool_get_table_columns(
             database_id,
@@ -962,6 +2449,14 @@ def execute_tool(
             catalog=catalog,
         )
 
+    if tool_name == "set_editor_sql":
+        return tool_set_editor_sql(
+            database_id=database_id,
+            sql=arguments["sql"],
+            schema_name=schema_name,
+            catalog=catalog,
+        )
+
     if tool_name == "execute_sql":
         return tool_execute_sql(
             database_id,
@@ -983,6 +2478,55 @@ def execute_tool(
             schema_name=schema_name,
             catalog=catalog,
             save_chart=arguments.get("save_chart", False),
+        )
+
+    # Dataset management tools
+    if tool_name == "list_datasets":
+        return tool_list_datasets(
+            database_id=database_id,
+            search=arguments.get("search"),
+        )
+
+    if tool_name == "get_dataset":
+        return tool_get_dataset(
+            dataset_id=arguments["dataset_id"],
+        )
+
+    if tool_name == "update_dataset":
+        return tool_update_dataset(
+            dataset_id=arguments["dataset_id"],
+            description=arguments.get("description"),
+            sql=arguments.get("sql"),
+            columns=arguments.get("columns"),
+        )
+
+    # Chart management tools
+    if tool_name == "list_charts":
+        return tool_list_charts(
+            search=arguments.get("search"),
+            dataset_id=arguments.get("dataset_id"),
+        )
+
+    if tool_name == "get_chart":
+        return tool_get_chart(
+            chart_id=arguments["chart_id"],
+        )
+
+    if tool_name == "update_chart":
+        return tool_update_chart(
+            chart_id=arguments["chart_id"],
+            chart_name=arguments.get("chart_name"),
+            description=arguments.get("description"),
+            viz_type=arguments.get("viz_type"),
+            params=arguments.get("params"),
+            datasource_id=arguments.get("datasource_id"),
+        )
+
+    if tool_name == "create_dashboard":
+        return tool_create_dashboard(
+            chart_ids=arguments["chart_ids"],
+            dashboard_title=arguments["dashboard_title"],
+            description=arguments.get("description"),
         )
 
     return {"error": f"Unknown tool: {tool_name}"}

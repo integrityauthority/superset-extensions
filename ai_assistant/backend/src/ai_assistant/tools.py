@@ -718,6 +718,507 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 
 
 # --------------------------------------------------------------------------
+# Code-driven discovery (no LLM, used in DISCOVER phase)
+# --------------------------------------------------------------------------
+
+
+def discover_schema(
+    database_id: int,
+    schema_name: str | None,
+    catalog: str | None,
+    user_question: str,
+    max_tables: int = 30,
+    max_columns_per_table: int = 80,
+) -> dict[str, Any]:
+    """Explore the database schema and optionally look up the target entity.
+
+    This is a deterministic, code-driven function (no LLM). It:
+    1. Lists all tables and views in the schema
+    2. Gets columns for each (up to max_tables)
+    3. Tries to identify a target entity mentioned in the question
+
+    Returns a dict ready to populate a PlanContext.
+    """
+    result: dict[str, Any] = {
+        "tables": {},
+        "views": {},
+        "entity_filter": None,
+        "entity_name": None,
+        "db_backend": "",
+    }
+
+    try:
+        database = _get_database(database_id)
+        result["db_backend"] = database.backend.lower() if database.backend else ""
+        is_mssql = "mssql" in result["db_backend"]
+
+        # Resolve schema
+        if not schema_name:
+            schema_name = "dbo" if is_mssql else "public"
+
+        # List tables
+        tables_result = tool_list_tables(database_id, schema_name, catalog)
+        table_names = tables_result.get("tables", [])[:max_tables]
+
+        # List views
+        views_result = tool_list_views(database_id, schema_name, catalog)
+        view_names = views_result.get("views", [])[:max_tables]
+
+        # Get columns for tables — skip tables that return 0 columns
+        for tbl in table_names:
+            cols_result = tool_get_table_columns(database_id, tbl, schema_name, catalog)
+            if "columns" in cols_result:
+                col_names = [c["name"] for c in cols_result["columns"]][:max_columns_per_table]
+                if col_names:
+                    result["tables"][tbl] = col_names
+                else:
+                    logger.debug("DISCOVER: skipping table '%s' — 0 columns", tbl)
+
+        # Get columns for views — skip views that return 0 columns
+        for vw in view_names:
+            cols_result = tool_get_table_columns(database_id, vw, schema_name, catalog)
+            if "columns" in cols_result:
+                col_names = [c["name"] for c in cols_result["columns"]][:max_columns_per_table]
+                if col_names:
+                    result["views"][vw] = col_names
+                else:
+                    logger.debug("DISCOVER: skipping view '%s' — 0 columns", vw)
+
+        # Try to find the target entity in the question
+        entity_name = _extract_entity_from_question(user_question)
+        if entity_name:
+            result["_extracted_entity"] = entity_name
+            entity_filter = _lookup_entity(
+                database_id, schema_name, catalog,
+                entity_name, result["tables"], is_mssql,
+            )
+            if entity_filter:
+                result["entity_filter"] = entity_filter
+                result["entity_name"] = entity_name
+
+                # Sample key column values from likely data tables so the LLM
+                # knows the real categorical values (not guesses)
+                sample_info = _sample_entity_data(
+                    database_id, schema_name, catalog,
+                    entity_filter, result["tables"], is_mssql,
+                )
+                if sample_info:
+                    result["sample_values"] = sample_info
+            else:
+                logger.info("DISCOVER: entity '%s' not found in any table", entity_name)
+                # Search for similar entities to offer as candidates
+                candidates = _search_entity_candidates(
+                    database_id, schema_name, catalog,
+                    entity_name, result["tables"], is_mssql,
+                )
+                if candidates:
+                    result["entity_candidates"] = candidates
+                    logger.info(
+                        "DISCOVER: found %d entity candidates for '%s': %s",
+                        len(candidates), entity_name,
+                        [c["name"] for c in candidates[:5]],
+                    )
+        else:
+            logger.info("DISCOVER: no entity extracted from question")
+
+    except Exception as ex:
+        logger.error("DISCOVER phase error: %s", ex, exc_info=True)
+
+    logger.info(
+        "DISCOVER: %d tables, %d views, entity=%s, filter=%s",
+        len(result["tables"]), len(result["views"]),
+        result["entity_name"], result["entity_filter"],
+    )
+    return result
+
+
+def _sample_entity_data(
+    database_id: int,
+    schema_name: str,
+    catalog: str | None,
+    entity_filter: str,
+    tables: dict[str, list[str]],
+    is_mssql: bool,
+    max_tables_to_sample: int = 3,
+) -> dict[str, dict[str, list[str]]]:
+    """Sample key categorical column values for the entity from likely data tables.
+
+    Returns: {table_name: {column_name: [distinct_values]}}
+
+    This helps the LLM know the real column values (e.g. "VII. ADÓZOTT EREDMÉNY")
+    instead of guessing ("BEVETEL", "KOLTSEG").
+    """
+    # Extract adoszam from the entity_filter if present
+    adoszam_match = re.search(r"\[adoszam\]\s*=\s*'([^']+)'", entity_filter)
+    d_b_id_match = re.search(r"\[d_b_belso_azonosito\]\s*=\s*(\d+)", entity_filter)
+
+    result: dict[str, dict[str, list[str]]] = {}
+
+    # Look for tables that have financial/reporting columns and contain entity data
+    financial_keywords = {"beszamolo", "redflag", "szamla", "eredmeny", "merleg"}
+    categorical_cols = re.compile(
+        r'(?:tipusa?|kodja|kategoria|tipus|jellege|forma)',
+        re.IGNORECASE,
+    )
+
+    sampled = 0
+    for tbl_name, columns in tables.items():
+        if sampled >= max_tables_to_sample:
+            break
+
+        # Only sample tables likely to have financial data
+        if not any(kw in tbl_name.lower() for kw in financial_keywords):
+            continue
+
+        # Find categorical columns to sample
+        cat_cols = [c for c in columns if categorical_cols.search(c)]
+        if not cat_cols:
+            continue
+
+        # Build WHERE clause for this table
+        where_parts = []
+        if "adoszam" in columns and adoszam_match:
+            where_parts.append(f"[adoszam] = '{adoszam_match.group(1)}'")
+        elif "d_b_belso_azonosito" in columns and d_b_id_match:
+            where_parts.append(f"[d_b_belso_azonosito] = {d_b_id_match.group(1)}")
+
+        if not where_parts:
+            continue
+
+        tbl_samples: dict[str, list[str]] = {}
+        for col in cat_cols[:5]:
+            try:
+                if is_mssql:
+                    sql = (
+                        f"SELECT DISTINCT TOP 20 [{col}]"
+                        f" FROM [{schema_name}].[{tbl_name}]"
+                        f" WHERE {' AND '.join(where_parts)}"
+                    )
+                else:
+                    sql = (
+                        f'SELECT DISTINCT "{col}"'
+                        f' FROM "{schema_name}"."{tbl_name}"'
+                        f" WHERE {' AND '.join(where_parts)} LIMIT 20"
+                    )
+                exec_result = tool_execute_sql(
+                    database_id, sql, schema_name, catalog, max_rows=20,
+                )
+                if exec_result.get("data"):
+                    vals = [str(row.get(col, "")) for row in exec_result["data"] if row.get(col)]
+                    if vals:
+                        tbl_samples[col] = vals
+            except Exception as ex:
+                logger.debug("DISCOVER: sample failed for %s.%s: %s", tbl_name, col, ex)
+
+        if tbl_samples:
+            result[tbl_name] = tbl_samples
+            sampled += 1
+            logger.info(
+                "DISCOVER: sampled %d columns from %s: %s",
+                len(tbl_samples), tbl_name, list(tbl_samples.keys()),
+            )
+
+    return result
+
+
+def _extract_entity_from_question(question: str) -> str | None:
+    """Best-effort extraction of a company/entity name from the user question.
+
+    Looks for patterns like quoted names, "Kft", "Zrt", "Bt." etc.
+    Handles mixed-case, hyphenated names (e.g. HUN-IKA Kft, HUNIKA Kft).
+    Also catches short alphanumeric names (4iG, OTP, MOL) and
+    common "Név + Bank/Group" patterns.
+    """
+    # Pattern 1: text in quotes (Hungarian or English quotes)
+    quoted = re.findall(r'[""„]([^""„"]+)["""]', question)
+    if quoted:
+        return quoted[0].strip()
+
+    # Pattern 2: Anchor on the company suffix (Kft, Zrt, etc.) and look
+    # backwards for 1-3 words that look like a name.
+    suffix_positions = list(re.finditer(
+        r'\b(Kft|Zrt|Bt|Nyrt|kft|zrt|bt|nyrt)\.?',
+        question,
+    ))
+    for suffix_match in suffix_positions:
+        prefix = question[:suffix_match.start()].rstrip()
+        words = prefix.split()
+        skip_words = {
+            "a", "az", "egy", "és", "vagy", "de", "is", "nem",
+            "hogy", "ha", "mint", "meg", "még", "le", "el", "ki",
+            "be", "fel", "ról", "ről", "nek", "nak", "ból", "ből",
+            "ban", "ben", "val", "vel", "ra", "re", "on", "en", "ön",
+            "ot", "at", "et", "öt", "hez", "hoz", "höz",
+        }
+        name_words: list[str] = []
+        for w in reversed(words):
+            if w.lower() in skip_words or (w[0].islower() and '-' not in w):
+                break
+            name_words.insert(0, w)
+            if len(name_words) >= 3:
+                break
+
+        if name_words:
+            suffix_text = suffix_match.group(0)
+            entity = " ".join(name_words) + " " + suffix_text
+            logger.info("DISCOVER: extracted entity '%s' from question", entity)
+            return entity
+
+    # Pattern 3: ALL CAPS word (3+ chars), possibly with hyphens
+    caps = re.findall(
+        r'\b([A-ZÁÉÍÓÖŐÚÜŰ][-A-ZÁÉÍÓÖŐÚÜŰ]{2,}(?:\s+[A-ZÁÉÍÓÖŐÚÜŰ][-A-ZÁÉÍÓÖŐÚÜŰ]*)*)\b',
+        question,
+    )
+    skip_kw = {"SQL", "SELECT", "FROM", "WHERE", "AND", "DASHBOARD", "CHART", "TABLE"}
+    caps = [c for c in caps if c not in skip_kw]
+    if caps:
+        return caps[0].strip()
+
+    # Pattern 4: Short alphanumeric company names (2-6 chars, at least one
+    # uppercase letter, may start with digit). Catches: 4iG, OTP, MOL, CIG,
+    # T-Systems, K&H, etc.
+    # Look for tokens that: (a) contain at least one uppercase letter,
+    # (b) are 2-6 chars, (c) are NOT common Hungarian/English words.
+    skip_short = {
+        "IT", "AI", "EU", "DB", "OK", "HU", "EN", "DE",
+        "EZ", "AZ", "HA", "IS", "NE", "MI", "TE",
+    }
+    short_candidates = re.findall(
+        r'\b([A-Za-z0-9][-A-Za-z0-9&]{1,5})\b',
+        question,
+    )
+    for cand in short_candidates:
+        upper_count = sum(1 for c in cand if c.isupper())
+        if upper_count >= 1 and cand.upper() not in skip_kw and cand.upper() not in skip_short:
+            # Must look "name-like": either mostly uppercase or digit+uppercase mix
+            alpha_chars = [c for c in cand if c.isalpha()]
+            if alpha_chars and (upper_count / len(alpha_chars)) >= 0.3:
+                logger.info("DISCOVER: extracted short entity '%s' from question", cand)
+                return cand
+
+    return None
+
+
+def _lookup_entity(
+    database_id: int,
+    schema_name: str,
+    catalog: str | None,
+    entity_name: str,
+    tables: dict[str, list[str]],
+    is_mssql: bool,
+) -> str | None:
+    """Search for entity_name in likely name-columns and return a WHERE filter.
+
+    Checks columns that look like company names (e.g. 'nev', 'name', 'cegnev',
+    'ugyfel_nev') across the discovered tables.
+
+    Generates multiple LIKE variants for the entity name to handle hyphens,
+    spaces, and company suffixes (e.g. "HUNIKA Kft" → search for "HUNIKA",
+    "HUN-IKA", "HUN IKA").
+
+    If the search returns MULTIPLE distinct entities, returns None so the
+    caller can offer them via ask_user. Only returns a filter when the match
+    is unambiguous (1 entity).
+
+    Returns a multi-line filter description that includes the source table,
+    all found identifiers, and an exact name — so the LLM can use the right
+    column for each table it queries.
+    """
+    name_column_patterns = re.compile(
+        r'(?:nev|name|cegnev|ceg_nev|ugyfel_nev|partner_nev|company|partner_name'
+        r'|bejegyzett_nev|rovid_nev)',
+        re.IGNORECASE,
+    )
+    id_column_patterns = re.compile(
+        r'(?:_id$|_azonosito$|belso_azonosito$|^id$|adoszam)',
+        re.IGNORECASE,
+    )
+
+    # Build LIKE search variants from entity_name
+    core_name = re.sub(
+        r'\s+(?:Kft|Zrt|Bt|Nyrt|kft|zrt|bt|nyrt)\.?\s*$', '', entity_name,
+    ).strip()
+    search_variants = {core_name}
+    if core_name != entity_name:
+        search_variants.add(entity_name)
+    if '-' in core_name:
+        search_variants.add(core_name.replace('-', ''))
+        search_variants.add(core_name.replace('-', ' '))
+    # Only generate hyphen variants for short single-word names (avoids
+    # explosion for multi-word names like "4iG a Digitális Társadalomért...")
+    if '-' not in core_name and ' ' not in core_name and 5 <= len(core_name) <= 12:
+        for split_pos in range(2, len(core_name) - 1):
+            variant = core_name[:split_pos] + '-' + core_name[split_pos:]
+            search_variants.add(variant)
+
+    logger.info(
+        "DISCOVER: entity lookup variants for '%s': %s",
+        entity_name, search_variants,
+    )
+
+    # Preferred table for lookup: alap_fajl or similar master tables
+    preferred_tables = ["alap_fajl", "v1_Cég", "v1_ceg"]
+    sorted_tables = sorted(
+        tables.items(),
+        key=lambda t: 0 if t[0] in preferred_tables else 1,
+    )
+
+    for table_name, columns in sorted_tables:
+        name_cols = [c for c in columns if name_column_patterns.search(c)]
+        if not name_cols:
+            continue
+
+        id_cols = [c for c in columns if id_column_patterns.search(c)]
+
+        for name_col in name_cols[:2]:
+            for variant in search_variants:
+                try:
+                    select_cols = [f"[{name_col}]" if is_mssql else f'"{name_col}"']
+                    for ic in id_cols[:5]:
+                        col_expr = f"[{ic}]" if is_mssql else f'"{ic}"'
+                        if col_expr not in select_cols:
+                            select_cols.append(col_expr)
+
+                    # Query multiple rows to check for ambiguity
+                    if is_mssql:
+                        sql = (
+                            f"SELECT DISTINCT TOP 10 {', '.join(select_cols)}"
+                            f" FROM [{schema_name}].[{table_name}]"
+                            f" WHERE [{name_col}] LIKE '%{variant}%'"
+                        )
+                    else:
+                        sql = (
+                            f"SELECT DISTINCT {', '.join(select_cols)}"
+                            f' FROM "{schema_name}"."{table_name}"'
+                            f" WHERE \"{name_col}\" ILIKE '%{variant}%' LIMIT 10"
+                        )
+
+                    exec_result = tool_execute_sql(
+                        database_id, sql, schema_name, catalog, max_rows=10,
+                    )
+
+                    rows = exec_result.get("data", [])
+                    if not rows:
+                        continue
+
+                    # Deduplicate by the name column
+                    unique_names = {str(r.get(name_col, "")).strip() for r in rows}
+                    unique_names.discard("")
+
+                    if len(unique_names) == 1:
+                        # Unambiguous match — use it
+                        row = rows[0]
+                        logger.info(
+                            "DISCOVER: entity '%s' found (unique) via variant '%s' "
+                            "in %s.%s: %s",
+                            entity_name, variant, table_name, name_col, row,
+                        )
+                        parts = [f"Found in table: {table_name}"]
+                        for col_name, col_val in row.items():
+                            if is_mssql:
+                                parts.append(f"  [{col_name}] = {col_val!r}")
+                            else:
+                                parts.append(f'  "{col_name}" = {col_val!r}')
+                        filter_desc = "\n".join(parts)
+                        logger.info("DISCOVER: entity filter:\n%s", filter_desc)
+                        return filter_desc
+
+                    # Multiple matches — ambiguous, return None to trigger ask_user
+                    logger.info(
+                        "DISCOVER: entity '%s' has %d matches in %s.%s: %s — "
+                        "returning None for ask_user",
+                        entity_name, len(unique_names), table_name, name_col,
+                        list(unique_names)[:5],
+                    )
+                    return None
+
+                except Exception as ex:
+                    logger.debug(
+                        "Entity lookup failed for %s.%s (variant '%s'): %s",
+                        table_name, name_col, variant, ex,
+                    )
+                    continue
+
+    return None
+
+
+def _search_entity_candidates(
+    database_id: int,
+    schema_name: str,
+    catalog: str | None,
+    entity_name: str,
+    tables: dict[str, list[str]],
+    is_mssql: bool,
+    max_candidates: int = 8,
+) -> list[dict[str, str]]:
+    """Search for entities similar to entity_name across name columns.
+
+    Returns a list of dicts: [{"name": "...", "table": "...", "filter": "..."}]
+    Used when _lookup_entity fails — offers candidates for ask_user.
+    """
+    name_column_patterns = re.compile(
+        r'(?:nev|name|cegnev|ceg_nev|ugyfel_nev|partner_nev|company|partner_name'
+        r'|bejegyzett_nev|rovid_nev)',
+        re.IGNORECASE,
+    )
+
+    # Core search term: strip suffixes, use first meaningful word(s)
+    core = re.sub(
+        r'\s+(?:Kft|Zrt|Bt|Nyrt|kft|zrt|bt|nyrt)\.?\s*$', '', entity_name,
+    ).strip()
+
+    candidates: list[dict[str, str]] = []
+    seen_names: set[str] = set()
+
+    for table_name, columns in tables.items():
+        name_cols = [c for c in columns if name_column_patterns.search(c)]
+        if not name_cols:
+            continue
+
+        for name_col in name_cols[:1]:
+            try:
+                if is_mssql:
+                    sql = (
+                        f"SELECT DISTINCT TOP {max_candidates} [{name_col}]"
+                        f" FROM [{schema_name}].[{table_name}]"
+                        f" WHERE [{name_col}] LIKE '%{core}%'"
+                    )
+                else:
+                    sql = (
+                        f'SELECT DISTINCT "{name_col}"'
+                        f' FROM "{schema_name}"."{table_name}"'
+                        f" WHERE \"{name_col}\" ILIKE '%{core}%'"
+                        f" LIMIT {max_candidates}"
+                    )
+
+                exec_result = tool_execute_sql(
+                    database_id, sql, schema_name, catalog, max_rows=max_candidates,
+                )
+
+                if exec_result.get("data"):
+                    for row in exec_result["data"]:
+                        name_val = str(row.get(name_col, "")).strip()
+                        if name_val and name_val not in seen_names:
+                            seen_names.add(name_val)
+                            candidates.append({
+                                "name": name_val,
+                                "table": table_name,
+                                "column": name_col,
+                            })
+
+            except Exception as ex:
+                logger.debug(
+                    "Entity search failed for %s.%s: %s",
+                    table_name, name_col, ex,
+                )
+
+        if len(candidates) >= max_candidates:
+            break
+
+    return candidates[:max_candidates]
+
+
+# --------------------------------------------------------------------------
 # Tool execution functions
 # --------------------------------------------------------------------------
 
@@ -1005,6 +1506,21 @@ def tool_set_editor_sql(
     error to the LLM so it can fix the query before trying again.
     """
     sql_stripped = sql.strip().upper()
+
+    # Reject DDL statements — only SELECT queries are allowed
+    ddl_keywords = ("CREATE", "ALTER", "DROP", "INSERT", "UPDATE", "DELETE", "EXEC", "TRUNCATE")
+    if any(sql_stripped.startswith(kw) for kw in ddl_keywords):
+        logger.warning(
+            "set_editor_sql REJECTED DDL statement: %s", sql[:200],
+        )
+        return {
+            "error": (
+                "DDL statements (CREATE, ALTER, DROP, etc.) are NOT allowed. "
+                "Only SELECT queries can be placed in the editor. "
+                "Rewrite your query as a SELECT statement."
+            ),
+        }
+
     is_select = sql_stripped.startswith("SELECT") or sql_stripped.startswith("WITH")
 
     if is_select:
@@ -1817,6 +2333,27 @@ def tool_create_dashboard(
             payload["description"] = description
 
         dashboard = CreateDashboardCommand(payload).run()
+
+        # Associate charts (slices) with the dashboard via the
+        # many-to-many relationship — position_json alone isn't enough
+        try:
+            from superset.models.slice import Slice
+            slices = []
+            for cid in chart_ids:
+                s = db.session.query(Slice).filter_by(id=cid).first()
+                if s:
+                    slices.append(s)
+                else:
+                    logger.warning(
+                        "Dashboard %s: chart id=%s not found", dashboard.id, cid,
+                    )
+            dashboard.slices = slices
+        except Exception as ex:
+            logger.warning(
+                "Dashboard %s: failed to associate slices: %s",
+                dashboard.id, ex,
+            )
+
         db.session.commit()
 
         dashboard_url = f"/superset/dashboard/{dashboard.id}/"
