@@ -11,6 +11,57 @@ declare module "@apache-superset/core" {
     interface Disposable {
       dispose(): void;
     }
+
+    /** Subscribe to an event; dispose the result to unsubscribe. */
+    type Event<T> = (listener: (e: T) => void) => Disposable;
+  }
+
+  // Chat API (SIP-214 — core.chat contribution).
+  // Present from Superset 6.2 onwards; feature-detect before use.
+  export namespace chat {
+    interface Chat {
+      id: string;
+      name: string;
+      description?: string;
+    }
+
+    type DisplayMode = "floating" | "panel";
+
+    function registerChat(
+      chat: Chat,
+      trigger: React.ComponentType,
+      panel: React.ComponentType,
+    ): common.Disposable;
+
+    function getChat(): Chat | undefined;
+    function open(): void;
+    function close(): void;
+    function isOpen(): boolean;
+    function getDisplayMode(): DisplayMode;
+    function setDisplayMode(displayMode: DisplayMode): void;
+
+    const onDidOpen: common.Event<void>;
+    const onDidClose: common.Event<void>;
+    const onDidChangeDisplayMode: common.Event<DisplayMode>;
+    const onDidResizePanel: common.Event<{ width: number }>;
+  }
+
+  // Navigation API — present from Superset 6.2 onwards; feature-detect before use.
+  export namespace navigation {
+    type Page =
+      | "dashboard"
+      | "dashboard_list"
+      | "explore"
+      | "chart_list"
+      | "sqllab"
+      | "query_history"
+      | "saved_queries"
+      | "dataset"
+      | "dataset_list"
+      | "home";
+
+    function getPage(): Page;
+    const onDidChangePage: common.Event<Page>;
   }
 
   // Views registration API

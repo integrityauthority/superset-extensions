@@ -2,12 +2,17 @@
   "publisher": "integrityauthority",
   "name": "vambery-ai-assistant",
   "displayName": "Vambery AI Agent",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "license": "Apache-2.0",
   "permissions": ["can_read"],
   "frontend": {
     "contributions": {
       "commands": [],
+      "chat": {
+        "id": "integrityauthority.vambery",
+        "name": "Vambery AI Agent",
+        "description": "AI-powered SQL assistant — explores schemas, writes and runs queries, and builds charts."
+      },
       "views": {
         "sqllab": {
           "rightSidebar": [

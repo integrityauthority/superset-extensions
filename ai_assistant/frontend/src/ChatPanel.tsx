@@ -28,6 +28,12 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { sqlLab, authentication, theme as themeApi } from "@apache-superset/core";
 import { useConversationStorage } from "./useConversationStorage";
+import {
+  safeGetCurrentTab,
+  isSqlLabContext,
+  getCurrentPage,
+  onPageChange,
+} from "./hostCapabilities";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import {
@@ -767,6 +773,15 @@ const ChatPanel: React.FC = () => {
   // Ref alias so existing code can use latestPlanState.current
   const latestPlanState = useRef<Record<string, unknown> | undefined>(undefined);
 
+  // Page awareness. Registered through core.chat (6.2+) the panel mounts on
+  // every page, but the agent needs a SQL Lab tab for its database context —
+  // and the sqlLab namespace throws when touched from another page.
+  const [sqlLabActive, setSqlLabActive] = useState<boolean>(isSqlLabContext);
+  useEffect(
+    () => onPageChange(() => setSqlLabActive(isSqlLabContext())),
+    [],
+  );
+
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   // Steps that arrive progressively while the agent is working
@@ -843,7 +858,7 @@ const ChatPanel: React.FC = () => {
 
   // Get current SQL Lab context
   const getContext = useCallback(async (): Promise<ChatContext> => {
-    const tab = sqlLab.getCurrentTab();
+    const tab = safeGetCurrentTab();
     let currentSql = "";
 
     if (tab) {
@@ -876,7 +891,7 @@ const ChatPanel: React.FC = () => {
   // Apply a single action immediately (called as actions stream in)
   const applyAction = useCallback(async (action: EditorAction): Promise<boolean> => {
     if (action.type === "set_editor_sql" && action.sql) {
-      const tab = sqlLab.getCurrentTab();
+      const tab = safeGetCurrentTab();
       if (tab) {
         try {
           const editor = await tab.getEditor();
@@ -928,6 +943,7 @@ const ChatPanel: React.FC = () => {
 
   // Run the current query in the SQL editor (manual fallback button)
   const handleRunQuery = useCallback(async () => {
+    if (!isSqlLabContext()) return;
     try {
       await sqlLab.executeQuery();
       console.log("[Vambery AI] Query executed");
@@ -1533,6 +1549,26 @@ const ChatPanel: React.FC = () => {
         <div ref={messagesEndRef} />
       </div>
 
+      {/* Outside SQL Lab the agent has no database context, so input is blocked
+          rather than letting every message fail on the backend. */}
+      {!sqlLabActive && (
+        <div
+          style={{
+            padding: theme.paddingSM,
+            margin: `0 ${theme.paddingSM}px`,
+            borderRadius: theme.borderRadiusSM,
+            background: theme.colorFillTertiary,
+            color: theme.colorTextSecondary,
+            fontSize: theme.fontSizeSM,
+            lineHeight: theme.lineHeight,
+          }}
+        >
+          The agent needs a SQL Lab tab for database context.
+          {getCurrentPage() ? ` You are on the "${getCurrentPage()}" page — ` : " "}
+          open SQL Lab to continue the conversation.
+        </div>
+      )}
+
       {/* Input area */}
       <div style={styles.inputContainer}>
         <textarea
@@ -1541,8 +1577,12 @@ const ChatPanel: React.FC = () => {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask about your data... (Enter to send, Shift+Enter for newline)"
-          disabled={loading}
+          placeholder={
+            sqlLabActive
+              ? "Ask about your data... (Enter to send, Shift+Enter for newline)"
+              : "Open SQL Lab to use the agent"
+          }
+          disabled={loading || !sqlLabActive}
           rows={3}
         />
         <div style={styles.buttonRow}>
@@ -1570,9 +1610,9 @@ const ChatPanel: React.FC = () => {
             </button>
           )}
           <button
-            style={styles.sendButton(loading || !input.trim())}
+            style={styles.sendButton(loading || !input.trim() || !sqlLabActive)}
             onClick={handleSend}
-            disabled={loading || !input.trim()}
+            disabled={loading || !input.trim() || !sqlLabActive}
             type="button"
           >
             {loading ? "Thinking..." : "Send"}

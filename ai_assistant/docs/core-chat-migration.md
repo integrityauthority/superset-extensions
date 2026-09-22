@@ -145,21 +145,25 @@ Fegyelem, különben csapda:
 - [ ] Dev/teszt pinned image build a `6.2` branchből (tag: `6.2.0-dev-<dátum>-<sha>`).
 - [ ] `extension.json` kompatibilitási/`engines` mező eldöntése.
 
-### A2. Regisztráció — dual-registration
-- [ ] `index.tsx`: feature-detektálás. Ha `chat.registerChat` elérhető → azt;
-      különben fallback `views.registerView(..., "sqllab.rightSidebar", ...)`.
-- [ ] `VamberyTrigger` komponens (összecsukott buborék) — ma nincs ilyen.
-- [ ] `extension.json`: `chat` contribution kulcs felvétele a `views` **mellé**.
-- [ ] Alapértelmezett display mode: `panel` (közelebb a mai élményhez), config-ból
-      felülírható; `setDisplayMode()` + `onDidChangeDisplayMode` kezelése.
+### A2. Regisztráció — dual-registration ✅ **kész (v0.6.0)**
+- [x] `index.tsx`: feature-detektálás. `chat.registerChat` → azt; különben fallback
+      `views.registerView(..., "sqllab.rightSidebar", ...)`. Namespace import
+      (`import * as core`), mert a named `chat` import 6.1-en nem linkelne.
+- [x] `VamberyTrigger` komponens (összecsukott buborék). A fejlesztői dokumentáció
+      szerint **a trigger felelős a nyitás/zárásért** (`chat.isOpen()/open()/close()`).
+- [x] `extension.json`: `chat` contribution a `views` **mellé** (`Contributions.chat`).
+- [x] **Nem** hívunk `setDisplayMode()`-ot regisztrációkor — a host megőrzi a user
+      display-mode és nyitva/zárva választását újratöltések közt; felülírni ellenséges lenne.
 
-### A3. Oldal-kontextus (a legkockázatosabb rész)
-- [ ] `ChatPanel` gate-elése `navigation.getPage()`-dzsel — **mind a 10 `Page` értékre**.
-      Ma a `ChatContext` (`database_id`, `schema`, `catalog`, `current_sql`) teljesen
-      `sqlLab.*`-ból jön; nem-`sqllab` oldalon `getCurrentTab()` elszáll.
-- [ ] `navigation.onDidChangePage()` feliratkozás: oldalváltáskor kontextus újraszámolás.
-- [ ] `set_editor_sql` és a többi SQL-editor-függő action elrejtése/„nyisd meg SQL Labben"
-      fallbackje nem-`sqllab` oldalon.
+### A3. Oldal-kontextus ✅ **kész (v0.6.0)**
+- [x] `ChatPanel` gate-elése — `hostCapabilities.isSqlLabContext()` a `navigation.getPage()`
+      fölött. A `safeGetCurrentTab()` minden `sqlLab.*` hívást véd (6.2+-on a namespace
+      **dob** rossz oldalról, nem `undefined`-ot ad).
+- [x] `navigation.onDidChangePage()` feliratkozás → oldalváltáskor újraszámolás.
+- [x] Nem-`sqllab` oldalon: figyelmeztető sáv + letiltott beviteli mező és Küldés gomb,
+      ahelyett hogy minden üzenet 400-zal elszállna a backenden.
+- [ ] Később: dashboard/explore kontextus tényleges kihasználása (ehhez kell a B2
+      upstream page-context bővítés — ma a `getPage()` csak a típust adja).
 
 ### A4. UI-illesztés
 - [ ] `onDidResizePanel` (`{ width }`) kezelése a fix méretezés helyett.
