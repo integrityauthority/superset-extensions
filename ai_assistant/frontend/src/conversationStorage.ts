@@ -111,7 +111,9 @@ let _storageAvailable: boolean | null = null;
 export function isStorageAvailable(): boolean {
   if (_storageAvailable !== null) return _storageAvailable;
   try {
-    const ctx = (window as any).superset?.extensions?.getContext?.();
+    // Must use the same access path as getStorage(), otherwise detection and
+    // actual access can disagree and silently disable persistence.
+    const ctx = extensions.getContext();
     _storageAvailable = ctx?.storage?.persistent != null;
   } catch {
     _storageAvailable = false;
@@ -177,22 +179,40 @@ async function saveAllConversations(map: ConversationsMap): Promise<void> {
   }
 }
 
+/**
+ * Serializes read-modify-write cycles on the conversations map. Without this,
+ * two overlapping saves both read the same snapshot and the slower one clobbers
+ * the other's conversation.
+ */
+let _writeChain: Promise<void> = Promise.resolve();
+
+function enqueueWrite(fn: () => Promise<void>): Promise<void> {
+  const next = _writeChain.then(fn, fn);
+  // Keep the chain alive even if a write rejects.
+  _writeChain = next.catch(() => undefined);
+  return next;
+}
+
 export async function loadConversation(tabId: string): Promise<StoredConversation | null> {
   const all = await loadAllConversations();
   return all[tabId] ?? null;
 }
 
 export async function saveConversation(tabId: string, data: StoredConversation): Promise<void> {
-  const all = await loadAllConversations();
-  all[tabId] = { ...data, updatedAt: Date.now() };
-  await saveAllConversations(all);
+  return enqueueWrite(async () => {
+    const all = await loadAllConversations();
+    all[tabId] = { ...data, updatedAt: Date.now() };
+    await saveAllConversations(all);
+  });
 }
 
 export async function deleteConversation(tabId: string): Promise<void> {
-  const all = await loadAllConversations();
-  if (!(tabId in all)) return;
-  delete all[tabId];
-  await saveAllConversations(all);
+  return enqueueWrite(async () => {
+    const all = await loadAllConversations();
+    if (!(tabId in all)) return;
+    delete all[tabId];
+    await saveAllConversations(all);
+  });
 }
 
 // -------------------------------------------------------------------------

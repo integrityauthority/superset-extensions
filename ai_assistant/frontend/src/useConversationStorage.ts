@@ -93,7 +93,12 @@ export function useConversationStorage(): ConversationStorageState {
   const [messages, setMessages] = useState<ChatMessageData[]>([]);
   const [todoItems, setTodoItems] = useState<TodoItemData[]>([]);
   const [pendingQuestion, setPendingQuestion] = useState<EditorActionData | null>(null);
+  // The ref stays authoritative for snapshots (no stale closures); the state
+  // mirror exists so consumers actually re-render when the plan state changes.
+  // Without it, a plan state restored on load/tab-switch never reaches ChatPanel.
   const activePlanStateRef = useRef<Record<string, unknown> | undefined>(undefined);
+  const [activePlanState, setActivePlanStateValue] =
+    useState<Record<string, unknown> | undefined>(undefined);
 
   // Model preference (loaded once)
   const [savedModelId, setSavedModelId] = useState<string | null>(null);
@@ -102,6 +107,7 @@ export function useConversationStorage(): ConversationStorageState {
   const setActivePlanState = useCallback(
     (ps: Record<string, unknown> | undefined) => {
       activePlanStateRef.current = ps;
+      setActivePlanStateValue(ps);
     },
     []
   );
@@ -156,7 +162,7 @@ export function useConversationStorage(): ConversationStorageState {
         setMessages(stored.messages);
         setTodoItems(stored.todoItems ?? []);
         setPendingQuestion(stored.pendingQuestion ?? null);
-        activePlanStateRef.current = stored.activePlanState;
+        setActivePlanState(stored.activePlanState);
       }
       if (!cancelled) setIsLoaded(true);
     })();
@@ -186,12 +192,12 @@ export function useConversationStorage(): ConversationStorageState {
         setMessages(stored.messages);
         setTodoItems(stored.todoItems ?? []);
         setPendingQuestion(stored.pendingQuestion ?? null);
-        activePlanStateRef.current = stored.activePlanState;
+        setActivePlanState(stored.activePlanState);
       } else {
         setMessages([]);
         setTodoItems([]);
         setPendingQuestion(null);
-        activePlanStateRef.current = undefined;
+        setActivePlanState(undefined);
       }
     }, 1000);
 
@@ -214,9 +220,9 @@ export function useConversationStorage(): ConversationStorageState {
     setMessages([]);
     setTodoItems([]);
     setPendingQuestion(null);
-    activePlanStateRef.current = undefined;
+    setActivePlanState(undefined);
     await deleteConversation(currentTabId);
-  }, [currentTabId]);
+  }, [currentTabId, setActivePlanState]);
 
   const persistModelPreference = useCallback((modelId: string) => {
     saveModelPreference(modelId);
@@ -236,7 +242,7 @@ export function useConversationStorage(): ConversationStorageState {
     setTodoItems,
     pendingQuestion,
     setPendingQuestion,
-    activePlanState: activePlanStateRef.current,
+    activePlanState,
     setActivePlanState,
     savedModelId,
     persistModelPreference,
