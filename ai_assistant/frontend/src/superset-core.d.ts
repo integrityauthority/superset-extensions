@@ -67,6 +67,90 @@ declare module "@apache-superset/core" {
     function getCSRFToken(): Promise<string | undefined>;
   }
 
+  // Extensions API (Storage API — merged in apache/superset#39171)
+  export namespace extensions {
+    // JSON-serializable value (matches @apache-superset/core/storage JsonValue)
+    type JsonValue =
+      | string
+      | number
+      | boolean
+      | null
+      | JsonValue[]
+      | { [key: string]: JsonValue };
+
+    // Base accessor for local/session (no .shared — browser storage is per-device)
+    interface StorageAccessor {
+      get<T = JsonValue>(key: string): Promise<T | null>;
+      set<T = JsonValue>(key: string, value: T): Promise<void>;
+      remove(key: string): Promise<void>;
+    }
+
+    interface EphemeralSetOptions {
+      ttl: number;
+      codec?: string;
+      isBinary?: boolean;
+    }
+
+    interface PersistentSetOptions {
+      encrypt?: boolean;
+      codec?: string;
+      isBinary?: boolean;
+    }
+
+    interface PersistentListOptions {
+      page: number;
+      pageSize: number;
+      resourceType?: string;
+      resourceUuid?: string;
+    }
+
+    interface PersistentListEntry<T = JsonValue> {
+      key: string;
+      value: T | null;
+      codec: string;
+      isBinary: boolean;
+    }
+
+    interface PersistentListResult<T = JsonValue> {
+      entries: PersistentListEntry<T>[];
+      count: number;
+    }
+
+    interface EphemeralStorageAccessor {
+      get<T = JsonValue>(key: string): Promise<T | null>;
+      set<T = JsonValue>(key: string, value: T, options: EphemeralSetOptions): Promise<void>;
+      remove(key: string): Promise<void>;
+    }
+
+    interface EphemeralStorageTier extends EphemeralStorageAccessor {
+      shared: EphemeralStorageAccessor;
+    }
+
+    interface PersistentStorageAccessor {
+      get<T = JsonValue>(key: string): Promise<T | null>;
+      set<T = JsonValue>(key: string, value: T, options?: PersistentSetOptions): Promise<void>;
+      list<T = JsonValue>(options: PersistentListOptions): Promise<PersistentListResult<T>>;
+      remove(key: string): Promise<void>;
+    }
+
+    interface PersistentStorageTier extends PersistentStorageAccessor {
+      shared: PersistentStorageAccessor;
+    }
+
+    interface ExtensionStorage {
+      local: StorageAccessor;
+      session: StorageAccessor;
+      ephemeral: EphemeralStorageTier;
+      persistent: PersistentStorageTier;
+    }
+
+    interface ExtensionContext {
+      storage: ExtensionStorage;
+    }
+
+    function getContext(): ExtensionContext;
+  }
+
   // Theme API (from @apache-superset/core/theme via Emotion)
   export namespace theme {
     interface SupersetTheme {
