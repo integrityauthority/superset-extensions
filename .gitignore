@@ -9,6 +9,7 @@ __pycache__/
 build/
 *.js.map
 *.supx
+*-requirements.txt
 
 # IDE
 .vscode/
