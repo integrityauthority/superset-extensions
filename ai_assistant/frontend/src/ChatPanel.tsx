@@ -27,6 +27,7 @@
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { sqlLab, authentication, theme as themeApi } from "@apache-superset/core";
+import { useConversationStorage } from "./useConversationStorage";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import {
@@ -752,17 +753,24 @@ const ChatPanel: React.FC = () => {
     return false;
   }, [theme.colorBgLayout]);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Persisted state via Storage API (graceful fallback when unavailable)
+  const storage = useConversationStorage();
+  const {
+    messages, setMessages,
+    todoItems, setTodoItems,
+    pendingQuestion, setPendingQuestion,
+    setActivePlanState,
+    storageAvailable,
+    savedModelId,
+    persistModelPreference,
+  } = storage;
+  // Ref alias so existing code can use latestPlanState.current
+  const latestPlanState = useRef<Record<string, unknown> | undefined>(undefined);
+
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   // Steps that arrive progressively while the agent is working
   const [streamingSteps, setStreamingSteps] = useState<AgentStep[]>([]);
-  // Todo items from the AI's update_todo tool (persists across turns)
-  const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
-  // Pending ask_user question (shown as interactive card)
-  const [pendingQuestion, setPendingQuestion] = useState<EditorAction | null>(null);
-  // Latest plan_state from the backend (for resuming after ask_user)
-  const latestPlanState = useRef<Record<string, unknown> | undefined>(undefined);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -818,6 +826,20 @@ const ChatPanel: React.FC = () => {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // Apply persisted model preference once both models list and saved pref are available
+  useEffect(() => {
+    if (savedModelId && modelsLoaded && availableModels.some((m) => m.id === savedModelId)) {
+      setSelectedModelId(savedModelId);
+    }
+  }, [savedModelId, modelsLoaded, availableModels]);
+
+  // Sync persisted activePlanState into the local ref (on load/tab switch)
+  useEffect(() => {
+    if (storage.activePlanState !== undefined) {
+      latestPlanState.current = storage.activePlanState;
+    }
+  }, [storage.activePlanState]);
 
   // Get current SQL Lab context
   const getContext = useCallback(async (): Promise<ChatContext> => {
@@ -937,6 +959,7 @@ const ChatPanel: React.FC = () => {
     setPendingQuestion(null);
     // Reset plan state for a new conversation
     latestPlanState.current = undefined;
+    setActivePlanState(undefined);
 
     try {
       const context = await getContext();
@@ -994,9 +1017,10 @@ const ChatPanel: React.FC = () => {
         }
       });
 
-      // Store plan_state for potential resume
+      // Store plan_state for potential resume (both ref + persistent storage)
       if (receivedPlanState) {
         latestPlanState.current = receivedPlanState;
+        setActivePlanState(receivedPlanState);
       }
 
       // Build the final assistant message with all collected data
@@ -1041,13 +1065,14 @@ const ChatPanel: React.FC = () => {
 
   // Clear conversation
   const handleClear = useCallback(() => {
-    setMessages([]);
     setInput("");
     setEditingIdx(null);
-    setTodoItems([]);
-    setPendingQuestion(null);
+    setStreamingSteps([]);
     latestPlanState.current = undefined;
-  }, []);
+    setActivePlanState(undefined);
+    // clearConversation resets messages, todoItems, pendingQuestion + deletes from storage
+    storage.clearConversation();
+  }, [storage, setActivePlanState]);
 
   // Handle user clicking an option from ask_user — sends plan_state to resume
   const handleOptionSelect = useCallback(async (optionLabel: string) => {
@@ -1116,6 +1141,7 @@ const ChatPanel: React.FC = () => {
 
       if (receivedPlanState) {
         latestPlanState.current = receivedPlanState;
+        setActivePlanState(receivedPlanState);
       }
 
       const assistantMessage: ChatMessage = {
@@ -1258,6 +1284,14 @@ const ChatPanel: React.FC = () => {
         <span style={styles.headerIcon}>&#x1F916;</span>
         <span>Vambery AI Agent</span>
         <span style={styles.betaBadge}>BETA</span>
+        {storageAvailable && (
+          <span
+            style={{ fontSize: theme.fontSizeSM - 2, color: theme.colorSuccess, marginLeft: 4 }}
+            title="Conversation is auto-saved"
+          >
+            &#x2713; saved
+          </span>
+        )}
       </div>
 
       {/* Messages area */}
@@ -1516,7 +1550,10 @@ const ChatPanel: React.FC = () => {
             <select
               style={styles.modelSelect}
               value={selectedModelId}
-              onChange={(e) => setSelectedModelId(e.target.value)}
+              onChange={(e) => {
+                setSelectedModelId(e.target.value);
+                persistModelPreference(e.target.value);
+              }}
               disabled={loading}
               title="Select AI model"
             >
