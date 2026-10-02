@@ -1,4 +1,4 @@
-# IH AI szerver használata (Superset + Cursor)
+# Belső AI szerver használata (Superset + Cursor)
 
 Rövid üzemeltetői / fejlesztői útmutató ahhoz az AI infrastruktúrához, amit a Superset **Vambery AI Agent** extension használ.
 
