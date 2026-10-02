@@ -30,7 +30,7 @@ Az Ollama ennek ellenére **párhuzamosan** is elérhető: a chat UI model selec
 | OpenAI-szerű model lista | `GET http://<ollama-host>:11434/v1/models` |
 | Chat (OpenAI formátum) | `POST http://<ollama-host>:11434/v1/chat/completions` |
 
-**Hálózat:** belső AD / IH hálózat (vagy VPN). Külső internetről általában **nem** érhető el. Auth alapból nincs (Ollama default) — ne tedd publikusra.
+**Hálózat:** belső hálózat (vagy VPN). Külső internetről általában **nem** érhető el. Auth alapból nincs (Ollama default) — ne tedd publikusra.
 
 ### Gyors ellenőrzés (PowerShell / bash)
 
@@ -133,7 +133,7 @@ Az Ollama `/v1` endpoint OpenAI Chat Completions kompatibilis. Cursorban:
 
 | Probléma | Ok / teendő |
 |----------|-------------|
-| Nem csatlakozik Cursorból | Laptop nincs IH hálón / VPN-en, vagy a Cursor cloud proxy **nem** látja a belső HTTP hostot |
+| Nem csatlakozik Cursorból | Laptop nincs a belső hálón / VPN-en, vagy a Cursor cloud proxy **nem** látja a belső HTTP hostot |
 | Cursor „public HTTPS” kell | Egyes Cursor verziók / Agent útvonalak a kérést a Cursor szerverein keresztül küldik — ekkor belső `http://<ollama-host>...` **nem** elég. Megoldás: belső reverse proxy + HTTPS, vagy tunnel (csak jóváhagyott módon) |
 | Rossz model név | Pontosan egyezzen az `ollama list` / `/api/tags` névvel (`tag` is számít) |
 | Lassú válasz | Nagy model (122B) GPU foglalt; próbálj kisebbet (`qwen3-coder:30b`) |
