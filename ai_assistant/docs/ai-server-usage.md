@@ -4,12 +4,12 @@ Rövid üzemeltetői / fejlesztői útmutató ahhoz az AI infrastruktúrához, a
 
 ## Mi van bekötve?
 
-Két független LLM backend van a Superset oldalon (pdapp2 `.env-local`):
+Két független LLM backend van a Superset oldalon (a Superset szerver `.env-local` fájlja):
 
 | Backend | Hol | Mire jó |
 |---------|-----|---------|
 | **Azure OpenAI** | `https://sandbox-ai-swedencentral.openai.azure.com/` | Cloud GPT (pl. `gpt-5.2-chat` deployment) |
-| **Ollama (belső AI szerver)** | `http://aia08.inhat.hu:11434` | Saját / self-hosted modellek |
+| **Ollama (belső AI szerver)** | `http://<ollama-host>:11434` | Saját / self-hosted modellek |
 
 Alapértelmezett provider a Superset configban jelenleg: **`AI_PROVIDER=azure_openai`**.  
 Az Ollama ennek ellenére **párhuzamosan** is elérhető: a chat UI model selector fel tudja sorolni mindkét provider modelljeit (`azure_openai/...`, `ollama/...`).
@@ -24,25 +24,25 @@ Az Ollama ennek ellenére **párhuzamosan** is elérhető: a chat UI model selec
 
 | Cél | URL |
 |-----|-----|
-| Ollama natív API | `http://aia08.inhat.hu:11434` |
-| OpenAI-kompatibilis API | `http://aia08.inhat.hu:11434/v1` |
-| Telepített modellek listája | `GET http://aia08.inhat.hu:11434/api/tags` |
-| OpenAI-szerű model lista | `GET http://aia08.inhat.hu:11434/v1/models` |
-| Chat (OpenAI formátum) | `POST http://aia08.inhat.hu:11434/v1/chat/completions` |
+| Ollama natív API | `http://<ollama-host>:11434` |
+| OpenAI-kompatibilis API | `http://<ollama-host>:11434/v1` |
+| Telepített modellek listája | `GET http://<ollama-host>:11434/api/tags` |
+| OpenAI-szerű model lista | `GET http://<ollama-host>:11434/v1/models` |
+| Chat (OpenAI formátum) | `POST http://<ollama-host>:11434/v1/chat/completions` |
 
 **Hálózat:** belső AD / IH hálózat (vagy VPN). Külső internetről általában **nem** érhető el. Auth alapból nincs (Ollama default) — ne tedd publikusra.
 
 ### Gyors ellenőrzés (PowerShell / bash)
 
 ```bash
-curl http://aia08.inhat.hu:11434/api/tags
-curl http://aia08.inhat.hu:11434/v1/models
+curl http://<ollama-host>:11434/api/tags
+curl http://<ollama-host>:11434/v1/models
 ```
 
 ### Egyszerű chat teszt (OpenAI-compatible)
 
 ```bash
-curl http://aia08.inhat.hu:11434/v1/chat/completions \
+curl http://<ollama-host>:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen3-coder:30b",
@@ -51,7 +51,7 @@ curl http://aia08.inhat.hu:11434/v1/chat/completions \
   }'
 ```
 
-### Jelenleg telepített modellek (pdapp2-ről ellenőrizve)
+### Jelenleg telepített modellek (a Superset szerverről ellenőrizve)
 
 Chat / tool-capable példák:
 
@@ -92,7 +92,7 @@ AZURE_OPENAI_DEPLOYMENT=gpt-5.2-chat
 AZURE_OPENAI_API_VERSION=2024-12-01-preview
 
 # Ollama (párhuzamosan felismerhető)
-OLLAMA_BASE_URL=http://aia08.inhat.hu:11434
+OLLAMA_BASE_URL=http://<ollama-host>:11434
 OLLAMA_MODEL=qwen3.5:122b
 ```
 
@@ -121,7 +121,7 @@ Az Ollama `/v1` endpoint OpenAI Chat Completions kompatibilis. Cursorban:
 1. **Cursor Settings → Models**
 2. **OpenAI API Key**: bármilyen nem üres string (pl. `ollama`) — Ollama nem ellenőrzi.
 3. **Override OpenAI Base URL**:  
-   `http://aia08.inhat.hu:11434/v1`
+   `http://<ollama-host>:11434/v1`
 4. **Add model**: pontos név, ahogy az Ollama listázza, pl.:
    - `qwen3-coder:30b`
    - `qwen3.5:122b`
@@ -134,7 +134,7 @@ Az Ollama `/v1` endpoint OpenAI Chat Completions kompatibilis. Cursorban:
 | Probléma | Ok / teendő |
 |----------|-------------|
 | Nem csatlakozik Cursorból | Laptop nincs IH hálón / VPN-en, vagy a Cursor cloud proxy **nem** látja a belső HTTP hostot |
-| Cursor „public HTTPS” kell | Egyes Cursor verziók / Agent útvonalak a kérést a Cursor szerverein keresztül küldik — ekkor belső `http://aia08...` **nem** elég. Megoldás: belső reverse proxy + HTTPS, vagy tunnel (csak jóváhagyott módon) |
+| Cursor „public HTTPS” kell | Egyes Cursor verziók / Agent útvonalak a kérést a Cursor szerverein keresztül küldik — ekkor belső `http://<ollama-host>...` **nem** elég. Megoldás: belső reverse proxy + HTTPS, vagy tunnel (csak jóváhagyott módon) |
 | Rossz model név | Pontosan egyezzen az `ollama list` / `/api/tags` névvel (`tag` is számít) |
 | Lassú válasz | Nagy model (122B) GPU foglalt; próbálj kisebbet (`qwen3-coder:30b`) |
 | Agent / tool gyenge | Válts tool-capable, nagyobb modellre |
@@ -147,7 +147,7 @@ Az Ollama `/v1` endpoint OpenAI Chat Completions kompatibilis. Cursorban:
 Ugyanarra az URL-re köthető:
 
 - Continue.dev / Cline / Open WebUI
-- Bármilyen OpenAI SDK kliens `base_url=http://aia08.inhat.hu:11434/v1` + dummy API key
+- Bármilyen OpenAI SDK kliens `base_url=http://<ollama-host>:11434/v1` + dummy API key
 
 Példa Python:
 
@@ -155,7 +155,7 @@ Példa Python:
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://aia08.inhat.hu:11434/v1",
+    base_url="http://<ollama-host>:11434/v1",
     api_key="ollama",
 )
 resp = client.chat.completions.create(
@@ -169,11 +169,11 @@ print(resp.choices[0].message.content)
 
 ## 4) Tudunk-e saját új modellt tenni rá?
 
-**Igen.** Ez Ollama szerver — új model = `ollama pull` (vagy saját GGUF import) a **aia08** gépen, megfelelő jogosultsággal.
+**Igen.** Ez Ollama szerver — új model = `ollama pull` (vagy saját GGUF import) az **Ollama-szerveren**, megfelelő jogosultsággal.
 
 ### Új modell telepítése (üzemeltető / AI host admin)
 
-SSH aia08-ra (vagy ahova az Ollama telepítve van), majd:
+SSH az Ollama-szerverre (vagy ahova az Ollama telepítve van), majd:
 
 ```bash
 # Példa: hivatalos Ollama registry-ből
@@ -229,8 +229,8 @@ VRAM / GPU limit: nagy modellek (80B–122B) egymással ütközhetnek — egyide
 
 ## 6) Checklist üzemeltetőnek / fejlesztőnek
 
-- [ ] VPN / belső hálózat OK → `curl aia08:11434/api/tags` megy
-- [ ] Kell-e új model? → `ollama pull` / `ollama create` aia08-on
+- [ ] VPN / belső hálózat OK → `curl <ollama-host>:11434/api/tags` megy
+- [ ] Kell-e új model? → `ollama pull` / `ollama create` az Ollama-szerveren
 - [ ] Superset: `.env-local` tartalmazza `OLLAMA_BASE_URL` (+ opcionálisan `OLLAMA_MODEL`)
 - [ ] UI-ban megjelenik `ollama/<model>` a dropdownban
 - [ ] Cursor: Base URL `.../v1`, model név pontos, csak az a model legyen aktív
@@ -242,5 +242,5 @@ VRAM / GPU limit: nagy modellek (80B–122B) egymással ütközhetnek — egyide
 
 - Extension config mapping: `ai_assistant/backend/src/ai_assistant/config.py`
 - Teljes Vambery README: `ai_assistant/README.md`
-- Futó env (pdapp2): `/docker/github-repo/superset/docker/.env-local`  
+- Futó env: a Superset telepítés `docker/.env-local` fájlja  
   (backup secrets: `/docker/env-files/superset/.env-local`)
