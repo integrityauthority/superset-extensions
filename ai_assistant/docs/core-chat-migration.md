@@ -1,6 +1,6 @@
 # `core.chat` + Storage API becsatlakozás, verziózás, upstream terv
 
-> Státusz: **terv**. Utolsó verzióellenőrzés: **2026-09-22**.
+> Státusz: **terv**. Utolsó verzióellenőrzés: **2026-10-09** (a repó-szintű állapot a [ROADMAP.md](../../ROADMAP.md)-ben).
 > Cél: a Vambery agent a hivatalos Superset extension-API-kra álljon át, a jelenlegi
 > 6.1.x-es éles telepítés törése nélkül.
 
@@ -19,7 +19,7 @@
 
 ---
 
-## 0) Verzióállás (2026-09-22) — a legfontosabb tény
+## 0) Verzióállás (2026-10-09) — a legfontosabb tény
 
 **Az egyetlen kiadott verzió továbbra is a 6.1.0 (2026-05-13).** Azóta nincs új app-release.
 Létezik viszont már **`6.2` és `7.0` release-előkészítő branch** — de **egyikből sincs
@@ -30,9 +30,11 @@ A két nekünk fontos funkció **külön minor verzióba került**:
 | Base | `chat` + `navigation` | `storage` | Branch head | Kiadva? |
 |---|---|---|---|---|
 | **6.1** (éles nálunk) | ❌ | ❌ | 2026-07-20 | ✅ 6.1.0, 2026-05-13 |
-| **6.2** (branch) | ✅ | ❌ | 2026-09-01 | ❌ nincs tag |
-| **7.0** (branch) | ✅ | ✅ | 2026-09-20 | ❌ nincs tag |
-| master | ✅ | ✅ | 2026-09-22 | — |
+| **6.2** (branch) | ✅ | ❌ | 2026-10-08 | ❌ nincs tag |
+| **7.0** (branch) | ✅ | ✅ | 2026-09-30 | ❌ nincs tag |
+| master | ✅ | ✅ | 2026-10-09 | — |
+
+> 2026-10-09: a 7.0 a backend-stacket is lecseréli (**SQLAlchemy 1.4 → 2.0, Flask 2 → 3**), és a chat bezárása unmountolja a panelt (display-mode váltás nem). Részletek és teendők: [ROADMAP.md](../../ROADMAP.md).
 
 **Következmények:**
 1. A `core.chat` **6.2-től** elérhető — de csak buildből, mert nincs kiadás.
