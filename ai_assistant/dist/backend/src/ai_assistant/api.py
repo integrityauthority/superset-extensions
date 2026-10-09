@@ -68,7 +68,7 @@ def _check_auth():
                     from superset.extensions import db
                     from superset.connectors.sqla.models import SqlaTable  # noqa: F401
                     user_model = security_manager.user_model
-                    found_user = db.session.query(user_model).get(user_id)
+                    found_user = db.session.get(user_model, user_id)  # SQLAlchemy 1.4+/2.0; Query.get is legacy
                     if found_user:
                         # Set user in Flask-Login context for downstream use
                         from flask_login import login_user
@@ -114,7 +114,8 @@ def chat() -> tuple[Response, int] | Response:
     if auth_error:
         return auth_error
 
-    data = request.get_json()
+    # silent=True: keep our 400 below instead of Flask's 415 on a bad content type
+    data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "Request body is required"}), 400
 
@@ -165,7 +166,8 @@ def chat_stream() -> tuple[Response, int] | Response:
     if auth_error:
         return auth_error
 
-    data = request.get_json()
+    # silent=True: keep our 400 below instead of Flask's 415 on a bad content type
+    data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "Request body is required"}), 400
 
