@@ -2,7 +2,7 @@
   "id": "integrityauthority.vambery-ai-assistant",
   "publisher": "integrityauthority",
   "name": "vambery-ai-assistant",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "displayName": "Vambery AI Agent",
   "license": "Apache-2.0",
   "permissions": [

@@ -94,7 +94,7 @@ Only contribute what is generally useful, via SIP + PR with tests.
 
 ## ai_assistant — Vambery AI Agent
 
-Current version **0.6.0**. Design detail: [core.chat + Storage API migration plan](ai_assistant/docs/core-chat-migration.md).
+Current version **0.6.1**. Design detail: [core.chat + Storage API migration plan](ai_assistant/docs/core-chat-migration.md).
 
 ### Tool duplication vs. Superset internals — **Open**
 
