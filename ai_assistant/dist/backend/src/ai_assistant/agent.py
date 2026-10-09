@@ -279,6 +279,9 @@ as few steps as possible. Avoid redundant tool calls.
 ## Self-Verification Checklist (run this mentally before your final response)
 - [ ] Did I explore the schema thoroughly (tables AND views)?
 - [ ] Did I test my SQL with execute_sql and confirm it returns correct data?
+- [ ] For totals/counts: is the grain right? Where a key has several rows (revisions, \
+versions, history), did I pick the authoritative row by its version column rather than \
+by insert order, and avoid summing across a one-to-many join? Did I state that rule?
 - [ ] Did I call set_editor_sql with the final query and it SUCCEEDED (no error returned)?
 - [ ] If the results are visual (aggregations, trends, comparisons): did I call create_chart?
 - [ ] If the user asked to edit a dataset/chart: did I make the requested changes?
@@ -712,6 +715,14 @@ def _build_step_system_prompt(
         f"realistic. If the query returns 0 rows, fix the SQL before creating the "
         f"chart. After chart creation, a validation check will run automatically "
         f"— if it reports 0 rows, fix the query.\n"
+        f"- **AGGREGATE CORRECTNESS**: rows coming back does not make a total "
+        f"right. Before saving a chart or reporting a SUM/COUNT/AVG, confirm the "
+        f"grain: if a table holds several rows per business key (revisions, "
+        f"versions, history, corrections), pick the authoritative row by its "
+        f"version column (revision, version, valid_from, effective date) — never "
+        f"by arrival or insert order (id, seq, created_at, load time). Do not "
+        f"SUM/COUNT across a join to a one-to-many table; aggregate first. "
+        f"Mention the rule you applied in your step summary.\n"
         f"- You are in AUTONOMOUS execution mode. Make your best-guess "
         f"decisions and keep going. Do NOT ask questions — just deliver results.\n"
         f"- When done, provide a brief summary of what you accomplished and any "
@@ -843,8 +854,13 @@ def _run_step_tools(
                 if tool_result.get("dashboard_id"):
                     step._dashboard_created = True  # type: ignore[attr-defined]
 
-                # Keep a compact snippet for the checker (first 500 chars of result)
+                # Keep a compact snippet for the checker. Include the SQL that
+                # actually ran — the executor often rewrites the planned query —
+                # so the checker can judge aggregate semantics, not just row counts.
                 snippet = json.dumps(tool_result, default=str)[:500]
+                executed_sql = tool_args.get("sql")
+                if isinstance(executed_sql, str) and executed_sql.strip():
+                    snippet = f"Executed SQL: {executed_sql[:1500]}\nResult: {snippet}"
                 last_context_snippet = snippet
 
                 # Yield step event
@@ -1441,6 +1457,10 @@ def _run_planner_stream(
             + "\n\nProvide a clear, complete summary for the user. "
             "Include key findings, any SQL queries that were set in the editor, "
             "and any charts that were created. "
+            "For every total, count or average you report, state in one line the "
+            "assumptions behind it — the grain (one row per what), which row was "
+            "treated as authoritative where several exist (e.g. latest by revision), "
+            "and the filters applied — so the user can catch a wrong business rule. "
             "If a dashboard was created, include its direct link as a Markdown link "
             "so the user can click it (e.g. [Dashboard title](/superset/dashboard/ID/))."
         )},

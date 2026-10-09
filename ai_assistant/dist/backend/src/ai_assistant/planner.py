@@ -92,6 +92,23 @@ class PlanContext:
     # User answers from ask_user
     user_answers: dict[str, str] = field(default_factory=dict)  # question -> answer
 
+    def schema_block(self) -> str:
+        """Render only the dialect and discovered tables/views.
+
+        Lets the checker compare a step's SQL against the real columns (e.g.
+        whether a version column exists that a "latest row" query ignored)
+        without resending step results and answers it already has.
+        """
+        parts: list[str] = []
+        if self.db_backend:
+            parts.append(f"SQL dialect: {self.db_backend}")
+        for label, objs in (("Tables", self.tables), ("Views", self.views)):
+            if objs:
+                parts.append(f"{label} and their columns:")
+                for name, cols in objs.items():
+                    parts.append(f"  {name}: {', '.join(cols)}")
+        return "\n".join(parts)
+
     def to_prompt_block(self) -> str:
         """Render context as a text block for the LLM's system prompt."""
         parts: list[str] = []
@@ -270,7 +287,18 @@ RULES:
    chart with a focused purpose (e.g. revenue trend, cost breakdown).
 11. **3+ charts minimum** for a dashboard request. Include at least: a trend \
    chart (line), a breakdown chart (bar or pie), and a summary/table chart.
-12. Return ONLY a JSON array — no markdown fences, no explanation.
+12. **Aggregate correctness — returning rows is not the same as being right.** \
+   Before any SUM/COUNT/AVG the user will see or a chart will show, fix the \
+   grain: one row per WHAT? If a table can hold several rows for the same \
+   business key (revisions, versions, history, corrections, snapshots), pick \
+   the authoritative row by its version column (e.g. revision, version, \
+   verzio, valid_from, effective or booking date) — NEVER by arrival or \
+   insert order (id, seq, created_at, load time), or a late-arriving old \
+   revision silently wins. Do not SUM/COUNT across a join to a one-to-many \
+   table (fan-out double counts): aggregate first, then join. If the \
+   columns do not reveal which row is authoritative, state the assumption \
+   in the step's expected_outcome.
+13. Return ONLY a JSON array — no markdown fences, no explanation.
 
 Output format:
 [
@@ -291,33 +319,52 @@ the latest step's result.
 
 Your job is MINIMAL and CONSERVATIVE:
 
-1. **If the step got ANY useful result (even partial)** → return []
+1. **If the step got ANY useful result (even partial)** → return [], \
+   unless rule 2 applies.
    A step that returns 1 row when you expected 5 is still a SUCCESS. \
    Do NOT re-plan just because the result is smaller than expected.
 
-2. **If the step COMPLETELY FAILED (error or truly zero useful data AND \
+2. **Exception — evidently wrong aggregates.** Rows coming back does not \
+   make a total correct. When the just-executed step computed a total, \
+   count or average that the user will see or a later step will chart, \
+   compare its SQL (see "Executed SQL") with the SCHEMA and act ONLY on \
+   these defects, and ONLY when they are evident from the SQL and the \
+   column list:
+   a. The "latest"/current row per key is chosen by arrival or insert order \
+      (id, seq, created_at, load time) although the table has a version \
+      column (revision, version, valid_from, effective date) — a \
+      late-arriving old revision would win.
+   b. SUM/COUNT across a join to a one-to-many table (fan-out double \
+      counting).
+   c. Several rows per business key summed with no deduplication at all.
+   If found: leave the executed step as it is; put the corrected SQL into \
+   the `request` of the pending step(s) that consume this result, or add \
+   ONE corrective step if none exists (it counts toward the 2-step limit). \
+   Never flag on speculation — when unsure, return [].
+
+3. **If the step COMPLETELY FAILED (error or truly zero useful data AND \
    the step is critical):**
    - Return modified/new steps ONLY for the failed step and its immediate \
      dependencies. Do NOT rewrite the entire remaining plan.
    - Limit new steps to at most 2.
 
-3. **If the step succeeded AND you found concrete identifiers (IDs, names):**
+4. **If the step succeeded AND you found concrete identifiers (IDs, names):**
    - Update the `request` field of remaining pending steps to include that \
      data (e.g. "use company_id=42 found in step 2").
    - Do NOT change anything else about those steps.
 
-4. **NEVER re-plan a step that already succeeded.** Once done is done.
+5. **NEVER re-plan a step that already succeeded.** Once done is done.
 
-5. **NEVER add more than 2 new steps** in a single check. The plan has a \
+6. **NEVER add more than 2 new steps** in a single check. The plan has a \
    budget — respect it.
 
-6. **Bias toward []** (no changes). When in doubt, return []. Moving forward \
+7. **Bias toward []** (no changes). When in doubt, return []. Moving forward \
    is almost always better than re-planning.
 
-7. step_id values MUST be integers. Use existing step_id for updates, or the \
+8. step_id values MUST be integers. Use existing step_id for updates, or the \
    next sequential integer for new steps.
 
-8. **Dashboard safety net.** If the user originally asked for a dashboard, \
+9. **Dashboard safety net.** If the user originally asked for a dashboard, \
    and you see that chart_ids have been created (check result summaries for \
    chart_id values), but there is NO remaining create_dashboard step in the \
    plan — you MUST add one. This is the most common failure mode.
@@ -446,8 +493,10 @@ def check_step_result(
             entry["context_snippet"] = s.context_snippet
         plan_snapshot.append(entry)
 
+    schema = plan.context.schema_block() or "(no schema discovered)"
     user_prompt = (
         f"Original question: {plan.question}\n\n"
+        f"SCHEMA:\n{schema}\n\n"
         f"Full plan:\n{json.dumps(plan_snapshot, indent=2, default=str)}\n\n"
         f"Just executed step {current_step.step_id}: {current_step.description}\n"
         f"Result summary: {current_step.result_summary or '(no result)'}\n"
