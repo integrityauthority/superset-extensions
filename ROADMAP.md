@@ -93,10 +93,6 @@ Only contribute what is generally useful, via SIP + PR with tests.
 - [ ] **Page context in the navigation namespace** *(secondary)*. `navigation.getPage()`
       returns only the page *type*; the concrete identifier (dashboard id, explore
       datasource, SQL Lab tab) is not exposed.
-- [ ] **SQL Lab: tables not loading after database + schema selection.** Our Superset
-      build carries a fix from March 2026 (`useDatabaseSelector` dispatching against an
-      empty query editor). Upstream 7.0.0rc2 has no equivalent guard, but may have solved it
-      differently. Reproduce on stock 7.0 first; upstream it only if the bug is still there.
 - **Not upstream:** LLM provider abstraction, planner-checker loop, concrete tool
   implementations. These are extension-level by nature.
 
