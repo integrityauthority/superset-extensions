@@ -17,15 +17,20 @@ or **Blocked** (waiting on something external).
 
 ### Superset version targets — **Planned**
 
-Last checked **2026-10-09**. Only 6.1.0 has ever been released (2026-05-13); `6.2` and
-`7.0` exist as branches with no tags yet. Capabilities we care about are split across
-them:
+Last checked **2026-10-25**. 6.1.0 is the only final release (2026-05-13). **7.0 has
+release candidates** — `7.0.0rc1` (2026-10-13) and `7.0.0rc2` (2026-10-16), with official
+`apache/superset` images for both. `6.2` is still an untagged branch, so 7.0 may well ship
+first. Capabilities we care about are split across them:
 
 | Base | `core.chat` + `navigation` | Extensions Storage API | Backend stack |
 |------|---------------------------|------------------------|---------------|
 | 6.1 (production) | ❌ | ❌ | SQLAlchemy 1.4, Flask 2 |
 | 6.2 (branch) | ✅ | ❌ | SQLAlchemy 1.4, Flask 2 |
-| 7.0 (branch) | ✅ | ✅ | **SQLAlchemy 2.0, Flask 3** |
+| 7.0 (rc2 tagged) | ✅ | ✅ | **SQLAlchemy 2.0, Flask 3** |
+
+Against `7.0.0rc2`, the extension API files we build on (`chat`, `navigation`,
+`contributions`, `sqlLab`, `views`) are byte-identical to the 6.2 branch, and the Storage
+API signatures match our declarations exactly. No code change is needed to target it.
 
 The 7.0 stack change matters more for our backend than any extension API change. A
 static check of `ai_assistant` found one legacy call (`Query.get()`, now `session.get()`)
@@ -37,9 +42,12 @@ build runs everywhere; a **pinned, versioned base image is an opt-in fast track*
 a requirement. Production stays on 6.1.x — a regulated system does not run an untagged
 branch.
 
-- [ ] Dev/test image pinned to the `6.2` branch (tag form: `6.2.0-dev-<date>-<sha>`), so
-      the chat surface can actually be exercised.
-- [ ] Re-check for 6.2/7.0 release tags periodically; revisit when either ships.
+- [ ] Test instance on the official `apache/superset:7.0.0rc2` image — a tag, not a branch,
+      which fits the pinning rule better than the earlier `6.2` branch plan. Use its own
+      metadata database (a copy at most, never the production one), and keep scheduled
+      reports off so a copied schedule cannot send duplicates.
+- [ ] Move production to 7.0.0 once it is final, after the test instance has passed.
+- [ ] Re-check for the 7.0.0 final and any 6.2 tag periodically.
 - [ ] Run the backend on a 7.0 build (SQLAlchemy 2.0 / Flask 3) — chat, streaming, JWT
       login and the four write tools (`update_dataset`, `update_chart`, `create_chart`,
       `create_dashboard`) in particular.
@@ -85,6 +93,10 @@ Only contribute what is generally useful, via SIP + PR with tests.
 - [ ] **Page context in the navigation namespace** *(secondary)*. `navigation.getPage()`
       returns only the page *type*; the concrete identifier (dashboard id, explore
       datasource, SQL Lab tab) is not exposed.
+- [ ] **SQL Lab: tables not loading after database + schema selection.** Our Superset
+      build carries a fix from March 2026 (`useDatabaseSelector` dispatching against an
+      empty query editor). Upstream 7.0.0rc2 has no equivalent guard, but may have solved it
+      differently. Reproduce on stock 7.0 first; upstream it only if the bug is still there.
 - **Not upstream:** LLM provider abstraction, planner-checker loop, concrete tool
   implementations. These are extension-level by nature.
 
@@ -155,6 +167,11 @@ Still open:
 - [ ] Prompt rules are not enforcement. Build a small synthetic regression set (late
       revisions, join fan-out, duplicate keys) and run the agent against it before and
       after prompt changes — synthetic data only.
+- [ ] Include a **conflicting-duplicates** case (suggested in the discussion): two
+      different amounts for the same invoice *and* revision. The version-column rule then
+      silently picks the later arrival. Expected: report the conflict and withhold the total
+      and any saved chart. Since the executor does not ask questions mid-run, the conflict
+      surfaces in the final answer.
 - [ ] A step that already saved a chart with a wrong aggregate cannot be corrected in
       place; the checker can only add a corrective step. Consider deferring
       `save_chart` until the checker has passed the producing SQL step.
@@ -202,7 +219,7 @@ capability.
   ([#44146](https://github.com/apache/superset/pull/44146)). Published tools should
   follow the same conventions — arguments wrapped in a `request` model, typed outputs.
 
-### Storage API — **Blocked** on a 7.0 build
+### Storage API — **Planned** (testable on `7.0.0rc2`)
 
 Implemented in 0.6.0 and dormant: detection makes it a no-op on 6.1/6.2, and it activates
 by itself on 7.0. It has never run against a live Storage API.
