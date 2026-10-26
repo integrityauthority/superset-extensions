@@ -2281,12 +2281,17 @@ def tool_create_dashboard(
 
         # Resolve chart slice names for better labels
         chart_names: dict[int, str] = {}
+        # The chart UUID must sit in the layout too: numeric chartIds alone do
+        # not survive export/import across instances (the exporter leaves them
+        # pointing at source ids and appends duplicate components).
+        chart_uuids: dict[int, str] = {}
         try:
             from superset.models.slice import Slice
             for cid in chart_ids:
                 s = db.session.query(Slice).filter_by(id=cid).first()
                 if s:
                     chart_names[cid] = s.slice_name
+                    chart_uuids[cid] = str(s.uuid)
         except Exception:
             pass
 
@@ -2314,6 +2319,7 @@ def tool_create_dashboard(
                     "width": 6,
                     "height": 50,
                     "sliceName": chart_names.get(chart_id, f"Chart {idx + 1}"),
+                    **({"uuid": chart_uuids[chart_id]} if chart_id in chart_uuids else {}),
                 },
             }
             position_json[row_key]["children"].append(chart_key)

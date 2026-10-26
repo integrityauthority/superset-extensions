@@ -26,7 +26,7 @@
  *
  * Storage keys:
  *   persistent (user-scoped):
- *     "conversations"   -> { [tabId]: StoredConversation }
+ *     "conversations.v2" -> { [tabId]: StoredConversation }  (not encrypted; see ENCRYPT_AT_REST)
  *     "customPrompts"   -> CustomPrompt[]
  *   persistent (shared):
  *     "sharedPlaybooks" -> SharedPlaybook[]
@@ -142,14 +142,30 @@ function getStorage(): extensions.ExtensionStorage | null {
 }
 
 // -------------------------------------------------------------------------
-// Conversation persistence (Tier 3: persistent, user-scoped, encrypted)
+// Conversation persistence (Tier 3: persistent, user-scoped)
 // -------------------------------------------------------------------------
 
-const CONVERSATIONS_KEY = "conversations";
+/**
+ * Encryption at rest is OFF until Superset fixes encrypted extension storage:
+ * in 7.0.0rc2 a value written with `encrypt: true` can never be read back
+ * (sqlalchemy_utils' EncryptedType does not support LargeBinary, so every
+ * read fails with "string argument without an encoding", whichever engine).
+ * Conversations stay in the Superset metadata database, scoped to the user.
+ * Re-enable once the upstream fix ships; existing plain rows stay readable.
+ */
+const ENCRYPT_AT_REST = false;
+
+// v2: the earlier key may hold an encrypted value that can never be read.
+const CONVERSATIONS_KEY = "conversations.v2";
 
 type ConversationsMap = { [tabId: string]: StoredConversation };
 
-async function loadAllConversations(): Promise<ConversationsMap> {
+/**
+ * All stored conversations, `{}` when none exist yet, or `null` when the read
+ * itself failed. Callers must not write after a failed read: saving a map
+ * built from `{}` would silently drop every other tab's conversation.
+ */
+async function loadAllConversations(): Promise<ConversationsMap | null> {
   if (!isStorageAvailable()) return {};
   const storage = getStorage();
   if (!storage) return {};
@@ -158,10 +174,11 @@ async function loadAllConversations(): Promise<ConversationsMap> {
     if (map && typeof map === "object" && !Array.isArray(map)) {
       return map;
     }
+    return {};
   } catch (err) {
     console.warn("[Vambery] Failed to load conversations:", err);
+    return null;
   }
-  return {};
 }
 
 async function saveAllConversations(map: ConversationsMap): Promise<void> {
@@ -172,7 +189,7 @@ async function saveAllConversations(map: ConversationsMap): Promise<void> {
     await storage.persistent.set<ConversationsMap>(
       CONVERSATIONS_KEY,
       map,
-      { encrypt: true }
+      { encrypt: ENCRYPT_AT_REST }
     );
   } catch (err) {
     console.warn("[Vambery] Failed to save conversations:", err);
@@ -195,12 +212,16 @@ function enqueueWrite(fn: () => Promise<void>): Promise<void> {
 
 export async function loadConversation(tabId: string): Promise<StoredConversation | null> {
   const all = await loadAllConversations();
-  return all[tabId] ?? null;
+  return all?.[tabId] ?? null;
 }
 
 export async function saveConversation(tabId: string, data: StoredConversation): Promise<void> {
   return enqueueWrite(async () => {
     const all = await loadAllConversations();
+    if (all === null) {
+      console.warn("[Vambery] Not saving: stored conversations could not be read");
+      return;
+    }
     all[tabId] = { ...data, updatedAt: Date.now() };
     await saveAllConversations(all);
   });
@@ -209,7 +230,7 @@ export async function saveConversation(tabId: string, data: StoredConversation):
 export async function deleteConversation(tabId: string): Promise<void> {
   return enqueueWrite(async () => {
     const all = await loadAllConversations();
-    if (!(tabId in all)) return;
+    if (all === null || !(tabId in all)) return;
     delete all[tabId];
     await saveAllConversations(all);
   });
