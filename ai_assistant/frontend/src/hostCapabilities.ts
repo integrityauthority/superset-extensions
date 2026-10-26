@@ -101,6 +101,41 @@ export function onPageChange(listener: (page: Page) => void): () => void {
 }
 
 /**
+ * Current chat display mode, or null when the panel is not mounted through
+ * core.chat (6.1 sidebar).
+ */
+export function getDisplayMode(): core.chat.DisplayMode | null {
+  if (!isChatApiAvailable()) return null;
+  try {
+    return core.chat.getDisplayMode();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Subscribe to display mode changes (the user can switch from host controls).
+ * Returns an unsubscribe function; a no-op without core.chat.
+ */
+export function onDisplayModeChange(
+  listener: (mode: core.chat.DisplayMode) => void,
+): () => void {
+  if (!isChatApiAvailable()) return () => undefined;
+  try {
+    const disposable = core.chat.onDidChangeDisplayMode(listener);
+    return () => {
+      try {
+        disposable.dispose();
+      } catch {
+        /* host already torn down */
+      }
+    };
+  } catch {
+    return () => undefined;
+  }
+}
+
+/**
  * Read the current SQL Lab tab, or null when unavailable — either because we
  * are on another page or because the host threw.
  */

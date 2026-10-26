@@ -33,6 +33,8 @@ import {
   isSqlLabContext,
   getCurrentPage,
   onPageChange,
+  getDisplayMode,
+  onDisplayModeChange,
 } from "./hostCapabilities";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -782,6 +784,13 @@ const ChatPanel: React.FC = () => {
     [],
   );
 
+  // Docked panel and sidebar give us a sized container, so 100% fills it. The
+  // floating overlay does not — 100% there collapses to the content height —
+  // so it gets a viewport-based height instead. The host keeps the panel
+  // mounted across mode switches, hence the subscription.
+  const [displayMode, setDisplayMode] = useState(getDisplayMode);
+  useEffect(() => onDisplayModeChange(setDisplayMode), []);
+
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   // Steps that arrive progressively while the agent is working
@@ -1294,7 +1303,13 @@ const ChatPanel: React.FC = () => {
   }, [editText, loading, messages, getContext, applyAction]);
 
   return (
-    <div style={styles.container}>
+    <div
+      style={
+        displayMode === "floating"
+          ? { ...styles.container, height: "min(75vh, 720px)" }
+          : styles.container
+      }
+    >
       {/* Header */}
       <div style={styles.header}>
         <span style={styles.headerIcon}>&#x1F916;</span>

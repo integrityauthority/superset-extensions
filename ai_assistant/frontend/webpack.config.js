@@ -24,10 +24,6 @@ module.exports = (env, argv) => {
     resolve: {
       extensions: [".ts", ".tsx", ".js", ".jsx"],
     },
-    externalsType: "window",
-    externals: {
-      "@apache-superset/core": "superset",
-    },
     module: {
       rules: [
         {
@@ -59,6 +55,16 @@ module.exports = (env, argv) => {
             singleton: true,
             requiredVersion: packageConfig.peerDependencies["antd"],
             import: false,
+          },
+          // Consumed from the host's share scope, as the 7.0 extension template
+          // does: that instance carries this extension's getContext(). Hosts
+          // that share nothing (6.1) get the window.superset fallback instead.
+          "@apache-superset/core": {
+            singleton: true,
+            requiredVersion: false,
+            version: "0.0.0",
+            shareKey: "@apache-superset/core",
+            import: path.resolve(__dirname, "src/supersetCoreFallback.js"),
           },
         },
       }),

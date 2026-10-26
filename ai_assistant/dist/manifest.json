@@ -2,7 +2,7 @@
   "id": "integrityauthority.vambery-ai-assistant",
   "publisher": "integrityauthority",
   "name": "vambery-ai-assistant",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "displayName": "Vambery AI Agent",
   "license": "Apache-2.0",
   "permissions": [
@@ -34,7 +34,7 @@
         "./index"
       ]
     },
-    "remoteEntry": "remoteEntry.a1aa9b9ca022dc015d60.js",
+    "remoteEntry": "remoteEntry.b2367ad3619685eb7c15.js",
     "moduleFederationName": "vambery_ai_assistant"
   },
   "backend": {
