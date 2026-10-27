@@ -1,6 +1,6 @@
 # Vambery AI Agent
 
-An AI-powered SQL assistant for Apache Superset (6.1.x+). It helps users explore
+An AI-powered SQL assistant for Apache Superset (7.0+ from 0.8; 0.7.x supports 6.1+). It helps users explore
 databases, write SQL queries, manage datasets and charts, and create visualizations
 through a conversational interface.
 
@@ -16,6 +16,11 @@ and registers itself accordingly, so a single build runs on all of them:
 > On 6.2+ the panel can open anywhere, but the agent needs a SQL Lab tab for its
 > database context. Outside SQL Lab it shows a notice and blocks input rather than
 > failing on every message.
+
+> **0.7.x is the last line that supports Superset 6.x.** From 0.8 on, Vambery
+> requires **Superset 7.0 or newer** and drops the SQL Lab sidebar fallback. Stay on
+> [v0.7.0](https://github.com/integrityauthority/superset-extensions/releases/tag/v0.7.0)
+> until you have upgraded Superset.
 
 > **Named after [Ármin Vámbéry](https://en.wikipedia.org/wiki/%C3%81rmin_V%C3%A1mb%C3%A9ry)** — the Hungarian orientalist, traveler, and polyglot who explored unknown territories. Like its namesake, Vambery navigates your data landscape so you don't have to.
 

@@ -1,6 +1,6 @@
 # Superset Extensions by Integrity Authority
 
-Community extensions for [Apache Superset](https://github.com/apache/superset) (6.1.x+), built using Superset's native [Extension System](https://superset.apache.org/developer-docs/extensions/overview/) and the `.supx` package format.
+Community extensions for [Apache Superset](https://github.com/apache/superset) (7.0+; Vambery 0.7.x for 6.x), built using Superset's native [Extension System](https://superset.apache.org/developer-docs/extensions/overview/) and the `.supx` package format.
 
 ---
 
@@ -118,20 +118,21 @@ We welcome contributions! Here's how:
 - [x] JWT Bearer token auth for programmatic / headless API access
 - [x] SQL pre-validation with `sqlglot` before execution
 - [x] Dashboard safety net — chart deduplication when composing dashboards
-- [ ] Superset Extensions Storage API integration (state persistence — [PR #39171](https://github.com/apache/superset/pull/39171))
-- [ ] Context-aware mode across all Superset tabs (Dashboard, Explore, SQL Lab)
-- [ ] Multi-turn memory with conversation history persistence
+- [x] Superset Extensions Storage API integration — conversations persist on 7.0+ ([PR #39171](https://github.com/apache/superset/pull/39171))
+- [x] Official chat surface (`core.chat`) on every page, with page awareness
+- [x] Multi-turn memory with conversation history persistence
 - [ ] Playbooks / knowledge base per database, schema, and table (e.g. [agentplaybooks.ai](https://agentplaybooks.ai))
 - [ ] Chart data retrieval tool (fetch raw data behind existing charts)
 - [ ] Support for more chart types (scatter, heatmap, geospatial)
 - [ ] Natural language filters and drill-downs
 - [ ] Dataset recommendations based on user queries
-- [ ] MCP tool registration for external AI agent integration
+- [ ] MCP tool registration for external AI agent integration — see [ROADMAP.md](ROADMAP.md) for the road to 1.0
 - [ ] OpenAI Responses API migration for server-side state and built-in tools
 
 ## Extension Format
 
-This repo targets **Apache Superset 6.1.x+** and the `.supx` extension format:
+This repo targets the `.supx` extension format. Vambery 0.7.x is the last release
+for **Apache Superset 6.x**; from 0.8 on it requires **Superset 7.0+**.
 
 | Convention | Status |
 |------------|--------|

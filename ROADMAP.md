@@ -15,47 +15,33 @@ or **Blocked** (waiting on something external).
 
 ## Cross-cutting
 
-### Superset version targets — **Planned**
+### Superset version targets — **Decided: 7.0+ only from 0.8**
 
-Last checked **2026-10-25**. 6.1.0 is the only final release (2026-05-13). **7.0 has
-release candidates** — `7.0.0rc1` (2026-10-13) and `7.0.0rc2` (2026-10-16), with official
-`apache/superset` images for both. `6.2` is still an untagged branch, so 7.0 may well ship
-first. Capabilities we care about are split across them:
+Last checked **2026-10-27**. 6.1.0 is the only final release; 7.0 has two release
+candidates (`7.0.0rc1`, `7.0.0rc2`); 6.2 is still an untagged branch.
 
-| Base | `core.chat` + `navigation` | Extensions Storage API | Backend stack |
-|------|---------------------------|------------------------|---------------|
-| 6.1 (production) | ❌ | ❌ | SQLAlchemy 1.4, Flask 2 |
-| 6.2 (branch) | ✅ | ❌ | SQLAlchemy 1.4, Flask 2 |
-| 7.0 (rc2 tagged) | ✅ | ✅ | **SQLAlchemy 2.0, Flask 3** |
+**Decision (2026-10-27): extensions in this repo target Superset 7.0 and newer.**
+- **Vambery 0.7.x is the last line that runs on 6.x.** It stays available as a release
+  for anyone who has not upgraded, but gets no new features.
+- From 0.8 on, the capability detection and the 6.x fallbacks are removed: the `views`
+  sidebar registration and the `window.superset` shim for `@apache-superset/core`.
+- New work may use anything 7.0 provides without a fallback: `core.chat`, the SQL Lab
+  and editor APIs, commands and menus, the Storage API, `superset_core` DAOs, MCP tool
+  registration and the Task Framework.
 
-Against `7.0.0rc2`, the extension API files we build on (`chat`, `navigation`,
-`contributions`, `sqlLab`, `views`) are byte-identical to the 6.2 branch, and the Storage
-API signatures match our declarations exactly. No code change is needed to target it.
+The earlier rule, capability detection with graceful fallback so that one build runs
+everywhere, applied while 6.x was the only stable base. It made the code carry two
+surfaces and two storage modes. Its last result is 0.7.0.
 
-The 7.0 stack change matters more for our backend than any extension API change. A
-static check of `ai_assistant` found one legacy call (`Query.get()`, now `session.get()`)
-and nothing else that SQLAlchemy 2.0 or Flask 3 removed — explicit commits, no raw string
-`execute`, no `select([...])`, no `dict(row)`. That is a static check, not a run.
+Done:
+- Test instance on the official `apache/superset:7.0.0rc2` image with production
+  content. Vambery 0.7.0 verified there: `core.chat` and the Storage API work; the
+  backend runs on SQLAlchemy 2.0 / Flask 3.
 
-Agreed approach: **capability detection with graceful fallback is the default**, so one
-build runs everywhere; a **pinned, versioned base image is an opt-in fast track**, never
-a requirement. Production stays on 6.1.x — a regulated system does not run an untagged
-branch.
-
-- [ ] Test instance on the official `apache/superset:7.0.0rc2` image — a tag, not a branch,
-      which fits the pinning rule better than the earlier `6.2` branch plan. Use its own
-      metadata database (a copy at most, never the production one), and keep scheduled
-      reports off so a copied schedule cannot send duplicates.
+Open:
 - [ ] Move production to 7.0.0 once it is final, after the test instance has passed.
-- [ ] Re-check for the 7.0.0 final and any 6.2 tag periodically.
-- [ ] Run the backend on a 7.0 build (SQLAlchemy 2.0 / Flask 3) — chat, streaming, JWT
-      login and the four write tools (`update_dataset`, `update_chart`, `create_chart`,
-      `create_dashboard`) in particular.
-- 7.0 also adds pieces worth adopting later: a name-based, **RLS-respecting** query API
-  for datasets (`POST /api/v1/datasource/<type>/<id>/query`,
-  [#43527](https://github.com/apache/superset/pull/43527)), and the Global Task Framework
-  in `superset_core` ([#43407](https://github.com/apache/superset/pull/43407)) for
-  long-running work.
+- [ ] Re-check for the 7.0.0 final periodically. Pin the minimum host version in
+      `extension.json` once 7.0.0 is tagged.
 
 ### Build and release automation — **Open**
 
@@ -86,6 +72,13 @@ while the shipped `manifest.json` is the full `extension.json` plus generated fi
 
 Only contribute what is generally useful, via SIP + PR with tests.
 
+- [ ] **Encrypted extension storage** *(submitted)*. Values written with
+      `encrypt: true` could never be read back. Issue
+      [#45787](https://github.com/apache/superset/issues/45787), fix and real-cipher tests in
+      [#45788](https://github.com/apache/superset/pull/45788). Once it is merged and released,
+      Vambery turns `ENCRYPT_AT_REST` back on. Follow-up named in the issue:
+      `re-encrypt-secrets` cannot handle user-scoped rows.
+
 - [ ] **Client Actions / agentic UI manipulation** *(primary candidate)*. SIP-214
       explicitly deferred this. We have a working reference (`set_editor_sql`,
       `ask_user`, `update_todo`). Check for an existing SIP first and join it if there
@@ -102,9 +95,101 @@ Only contribute what is generally useful, via SIP + PR with tests.
 
 ## ai_assistant — Vambery AI Agent
 
-Current version **0.6.1**. Design detail: [core.chat + Storage API migration plan](ai_assistant/docs/core-chat-migration.md).
+Current version **0.7.0**, the last one for Superset 6.x. Design detail:
+[core.chat + Storage API migration plan](ai_assistant/docs/core-chat-migration.md).
 
-### Tool duplication vs. Superset internals — **Open**
+### Road to 1.0 — **Planned** (decided 2026-10-27)
+
+1.0 means: Superset 7.0+ only, permission-checked, able to edit what already exists, usable
+from SQL Lab directly and from external agents. Once it ships, announce it in the
+[beta discussion](https://github.com/apache/superset/discussions/38356) and elsewhere.
+
+**0.8 — 7.0-only foundation, permissions, no lost functionality**
+- [ ] Remove the 6.x code paths: `views` registration, the `window.superset` shim,
+      the `isChatApiAvailable` / `isNavigationApiAvailable` detection, and the "no
+      Storage API" branches. Bump the build to the 7.0 `@apache-superset/core` types.
+- [ ] Move the metadata tools onto `superset_core` DAOs. Their `base_filter` applies
+      Superset's own visibility rules.
+- [ ] Route aggregates over datasets through the dataset query API
+      ([#43527](https://github.com/apache/superset/pull/43527)), so that RLS, caching and row
+      limits apply. Free-form SQL stays on our path.
+- [ ] Close the authorisation gaps listed under
+      [Authorisation and database access](#authorisation-and-database-access--open).
+- [ ] **Parity check before and after.** List what each of the 18 tools does today and
+      prove the new implementation does the same. Use a scripted run against the test
+      instance with fixed inputs and compared outputs. Nothing ships if a capability is lost.
+
+**0.9 — act in the app, and edit what exists**
+- [ ] SQL Lab control through `sqlLab` and the editor handle:
+  - insert or replace SQL in the editor, run it, or open it in a new tab;
+  - use the selected text as context;
+  - mark the faulty line with annotations.
+- [ ] React to `onDidQueryFail`: offer to explain and fix the failing query.
+- [ ] Commands and menus. Example: an "Ask Vambery" entry in the editor that opens the
+      chat with the selection.
+- [ ] **Edit existing objects, not just create new ones:**
+  - `update_dashboard`: title, add, remove or reorder charts, layout, native filters;
+  - edit a chart that already sits on a dashboard;
+  - dataset metrics and calculated columns.
+  - Say that 7.0 version history makes every change revertible. Check
+    `is_managed_externally` before editing, because 7.0 refuses such updates server-side.
+- [ ] **Teach the agent what 7.0 changed** (see [below](#teach-the-agent-about-70--planned)).
+
+**0.10 — platform**
+- [ ] Publish tools to MCP through `superset_core.mcp.decorators.tool`. The 7.0 MCP
+      process loads extensions; this was checked on the test instance. Start with
+      `vambery_ask`, the whole planner and checker behind one tool, plus a few read-only
+      tools with `class_permission_name`.
+- [ ] Long multi-step runs on the Task Framework (`superset_core.tasks`): they survive a
+      closed tab, can be cancelled and report progress.
+- [ ] Settings, see [Configuration and preferences](#configuration-and-preferences--planned).
+- [ ] Chat polish: follow `onDidResizePanel`. Re-enable encryption when the upstream fix
+      ([#45788](https://github.com/apache/superset/pull/45788)) is released.
+
+**1.0** — the above, plus the answer-correctness regression set and a CI-built `.supx`.
+
+### Teach the agent about 7.0 — **Planned**
+
+From the 7.0 `UPDATING.md`, the changes the agent's tools and prompts must know about:
+- [ ] **Owners → Subjects.** Owners, dashboard roles and RLS roles are replaced by
+      Subjects. Check every place that reads or sets ownership.
+- [ ] **`explore_json` is removed** and charts are drawn from their saved query context.
+      `create_chart` does not save one today. Such charts work in Explore, which
+      regenerates it on open, but reports, thumbnails and chart-data-by-id may fail
+      until then. Save the query context at creation.
+- [ ] **New aggregates:** `MEDIAN`, sample standard deviation and sample variance.
+- [ ] **Version history and soft delete are on by default,** and tagging is on. Tag
+      what the agent creates, and mention version history when it edits.
+- [ ] **SQL Lab denies `information_schema` and large-object access by default.**
+      Schema exploration must keep using the inspector, never `information_schema`
+      queries.
+- [ ] **Native value filters:** "Select all" always targets the whole column. This
+      matters once the agent edits filters.
+
+### Configuration and preferences — **Planned**
+
+Today:
+- **Configuration is server-side only:** the `AI_ASSISTANT` dict in
+  `superset_config.py`, or environment variables. There is no settings screen.
+- **Azure OpenAI** offers exactly one deployment (`AZURE_OPENAI_DEPLOYMENT`).
+- **Ollama models are discovered live** from `/api/tags` each time the panel loads.
+- **Per user,** the chosen model is remembered (Storage API, local tier). History is kept
+  per SQL Lab tab (persistent tier).
+
+Plan:
+- [ ] Admin defaults keep coming from `superset_config.py` / env. The rest layers on
+      top of them; nothing new is required to start.
+- [ ] Azure discovery like Ollama's: list the resource's deployments and offer the
+      chat-capable ones. An optional allow-list keeps embeddings and routers out.
+- [ ] A small settings view in the chat:
+  - favourite models and the default model;
+  - history retention and "clear my history";
+  - answer language.
+
+  Stored per user in the persistent tier.
+- [ ] Decide whether conversations stay per SQL Lab tab now that the panel is global.
+
+### Tool duplication vs. Superset internals — **Planned for 0.8**
 
 Raised by Erik O'Leary in
 [issue #2](https://github.com/integrityauthority/superset-extensions/issues/2): are we
@@ -121,9 +206,11 @@ lives — imports no `fastmcp` at all, only `pydantic` and `superset.daos.base.B
 and the REST API sit on it; we currently bypass it with raw
 `db.session.query(SqlaTable)` / `Slice`.
 
-- **Question:** move the metadata tools onto the DAO layer now, or leave them?
-- Recommendation: yes, but scoped to `list_datasets`, `get_dataset`, `list_charts`,
-  `get_chart` — the place where duplication and our authorisation gap are the same code.
+- **Decided (2026-10-27):** move onto the DAO layer in 0.8. Start with `list_datasets`,
+  `get_dataset`, `list_charts` and `get_chart`, where the duplication and our
+  authorisation gap are the same code. It must not lose any capability; see the parity
+  check under [Road to 1.0](#road-to-10--planned-decided-2026-10-27). 7.0 exposes
+  these DAOs to extensions as `superset_core.common.daos`.
 - **Do not** import the MCP tool functions (they need the optional `fastmcp` extra and a
   FastMCP `Context`), and do not couple to `superset.mcp_service.*` internals of a
   service we don't run.
@@ -192,10 +279,11 @@ Found while reviewing the agent's SQL path. Ordered by severity.
       per-object permission check.
 - [ ] **Auth fails open**, and SQL is logged without the acting user — weak audit trail.
 
-### Publish our tools to MCP — **Open**
+### Publish our tools to MCP — **Planned for 0.10**
 
-The complement to the question above: `@tool` from `superset_core.mcp.decorators`
-(available since 6.1) lets an extension register tools *into* the MCP service.
+The complement to the question above: `@tool` from `superset_core.mcp.decorators` lets an
+extension register tools *into* the MCP service. On 7.0 the MCP process loads extensions
+at startup (checked on the test instance), so this needs no extra deployment step.
 
 Direction: factor tool logic into one shared layer, have the in-app agent call it
 directly in-process, and expose the data-oriented tools via `@tool` so external agents
@@ -208,36 +296,32 @@ capability.
 
 - [ ] Reply to [issue #2](https://github.com/integrityauthority/superset-extensions/issues/2)
       with this position (draft prepared).
-- [ ] Decide which tools are worth publishing.
+- [ ] Decide which tools are worth publishing. Starting point: `vambery_ask` (the
+      planner and checker as one tool — what plain MCP tools do not offer) plus read-only
+      tools. Publish nothing before the 0.8 permission work.
 - Upstream MCP keeps moving and makes publishing more attractive for external agents
   (e.g. Hermes): typed tool outputs and request-wrapper validation errors on 7.0; an
   optional **per-role dataset scope** on master only
   ([#44146](https://github.com/apache/superset/pull/44146)). Published tools should
   follow the same conventions — arguments wrapped in a `request` model, typed outputs.
 
-### Storage API — **Planned** (testable on `7.0.0rc2`)
+### Storage API — **Done in 0.7.0**, encryption **Blocked**
 
-Implemented in 0.6.0 and dormant: detection makes it a no-op on 6.1/6.2, and it activates
-by itself on 7.0. It has never run against a live Storage API.
+Verified on `7.0.0rc2`: conversations persist per SQL Lab tab and survive a reload. They
+are stored **unencrypted**, because `encrypt: true` values cannot be read back on that
+build. The fix is submitted upstream
+([#45788](https://github.com/apache/superset/pull/45788)).
 
-- [ ] Exercise on a 7.0 build: persistence, `encrypt: true`, per-tab scoping,
-      `persistent.shared` for playbooks.
+- [ ] Re-enable `ENCRYPT_AT_REST` once a release contains the fix. Values written by
+      the broken builds will still read back.
+- [ ] `persistent.shared` for playbooks.
 
 ### Chat surface follow-ups — **Planned**
 
-Dual registration landed in 0.6.0 (`core.chat` with SQL Lab sidebar fallback).
+`core.chat` registration landed in 0.6.0 and was verified on 7.0.0rc2 in 0.7.0.
 
-- [ ] Exercise on a 6.2 build — all 18 tools and the planner through the chat mount;
-      confirm the panel degrades correctly on the nine non-SQL-Lab pages.
-- [ ] Handle `onDidResizePanel` instead of fixed sizing (note: the docs warn not all
+- [ ] Handle `onDidResizePanel` instead of fixed sizing (the docs warn that not all
       hosts provide a resizer).
 - [ ] Check theme and syntax highlighting in the narrower floating bubble.
-- [ ] Decide whether conversations should stay per-SQL-Lab-tab now that the panel is
-      global.
-- [ ] **Closing the chat loses the conversation on 6.2.** Per the 7.0 chat docs
-      ([#44490](https://github.com/apache/superset/pull/44490)), switching display mode
-      keeps the panel mounted, but closing it unmounts the panel. With no Storage API on
-      6.2, the in-memory conversation is gone. **Open:** fall back to browser
-      `sessionStorage` there? It would be unencrypted, which conflicts with the
-      `encrypt: true` choice made for 7.0 — a policy call, not a technical one.
-- [ ] Retire the `views` fallback once a `core.chat` host is the supported minimum.
+- The 6.x-only items (sidebar fallback, losing conversations on 6.2) are closed by the
+  7.0-only decision.
