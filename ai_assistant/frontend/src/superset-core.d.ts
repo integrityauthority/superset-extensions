@@ -64,31 +64,62 @@ declare module "@apache-superset/core" {
     const onDidChangePage: common.Event<Page>;
   }
 
-  // Views registration API
-  export namespace views {
-    interface View {
+  // Commands (7.0): registered actions that menus and toolbars invoke
+  export namespace commands {
+    interface Command {
       id: string;
-      name: string;
+      title: string;
+      icon?: string;
       description?: string;
     }
 
-    function registerView(
-      view: View,
-      location: string,
-      provider: () => React.ReactElement
+    function registerCommand(
+      command: Command,
+      callback: (...args: unknown[]) => unknown,
     ): common.Disposable;
-
-    function getViews(location: string): View[] | undefined;
+    function executeCommand<T = unknown>(command: string, ...args: unknown[]): Promise<T>;
   }
 
-  // SQL Lab API
+  // Menus (7.0): place commands in host toolbars, e.g. "sqllab.editor"
+  export namespace menus {
+    interface MenuItem {
+      view: string;
+      command: string;
+      description?: string;
+    }
+
+    function registerMenuItem(
+      item: MenuItem,
+      location: string,
+      group: "primary" | "secondary" | "context",
+    ): common.Disposable;
+  }
+
+  // SQL Lab API (7.0)
   export namespace sqlLab {
+    interface Position {
+      /** zero-based */
+      line: number;
+      column: number;
+    }
+
+    interface EditorAnnotation {
+      /** zero-based */
+      line: number;
+      column?: number;
+      message: string;
+      severity: "error" | "warning" | "info";
+    }
+
     interface Editor {
       getValue(): string;
       setValue(value: string): void;
       getSelectedText(): string;
       insertText(text: string): void;
       focus(): void;
+      scrollToLine(line: number): void;
+      setAnnotations(annotations: EditorAnnotation[]): void;
+      clearAnnotations(): void;
     }
 
     interface Tab {
@@ -104,13 +135,35 @@ declare module "@apache-superset/core" {
       id: string;
     }
 
+    interface QueryContext {
+      clientId: string;
+      tab: Tab;
+    }
+
+    interface QueryErrorResultContext extends QueryContext {
+      errorMessage: string;
+      executedSql: string | null;
+    }
+
+    interface CreateTabOptions {
+      sql?: string;
+      title?: string;
+      databaseId?: number;
+      catalog?: string | null;
+      schema?: string | null;
+    }
+
     function getCurrentTab(): Tab | undefined;
     function getTabs(): Tab[];
     function getDatabases(): { id: number; database_name: string }[];
+    function createTab(options?: CreateTabOptions): Promise<Tab>;
     function executeQuery(options?: {
       sql?: string;
+      selectedOnly?: boolean;
       limit?: number;
     }): Promise<string>;
+    const onDidQueryFail: common.Event<QueryErrorResultContext>;
+    const onDidQuerySuccess: common.Event<QueryContext>;
   }
 
   // Authentication API

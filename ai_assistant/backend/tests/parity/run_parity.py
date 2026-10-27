@@ -205,10 +205,41 @@ def main() -> int:  # noqa: C901
                 "description": "Parity run",
                 "params": {"show_legend": False},
             })
-            run("create_dashboard", "create_dashboard", {
+            dash = run("create_dashboard", "create_dashboard", {
                 "dashboard_title": f"{RUN} dashboard",
                 "chart_ids": [state["chart_id"]],
             })
+            state["dashboard_id"] = dash.get("dashboard_id")
+
+        # New in 0.9: find and edit existing dashboards.
+        if state.get("dashboard_id") and state["chart_id"]:
+            dash_id = state["dashboard_id"]
+            second = execute_tool("create_chart", {
+                "chart_name": f"{RUN} second chart", "viz_type": "bar",
+                "sql": GOOD_SQL, "x_column": "gender", "y_column": "total",
+                "save_chart": True,
+            }, DB_ID, SCHEMA, None).get("chart_id")
+            run("list_dashboards", "list_dashboards", {"search": RUN})
+            run("update_dashboard_add", "update_dashboard", {
+                "dashboard_id": dash_id, "dashboard_title": f"{RUN} renamed",
+                "add_chart_ids": [second],
+                "add_filters": [{"name": "Gender", "dataset_id": state["dataset_id"],
+                                 "column": "gender"}],
+            })
+            run("update_dashboard_bad_column", "update_dashboard", {
+                "dashboard_id": dash_id,
+                "add_filters": [{"name": "X", "dataset_id": state["dataset_id"],
+                                 "column": "no_such_column"}],
+            })
+            run("update_dashboard_reorder", "update_dashboard", {
+                "dashboard_id": dash_id, "chart_order": [second, state["chart_id"]],
+            })
+            run("get_dashboard_after_add", "get_dashboard", {"dashboard_id": dash_id})
+            run("update_dashboard_remove", "update_dashboard", {
+                "dashboard_id": dash_id, "remove_chart_ids": [second],
+                "remove_filters": ["Gender"],
+            })
+            run("get_dashboard_after_remove", "get_dashboard", {"dashboard_id": dash_id})
 
         # A chart someone else owns: reading may be allowed, editing is not.
         if os.environ.get("PARITY_FOREIGN_CHART"):

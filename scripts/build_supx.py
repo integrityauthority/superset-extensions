@@ -91,6 +91,11 @@ def main() -> None:
     ext_id = f"{ext['publisher']}.{ext['name']}"
     version = ext["version"]
 
+    # Superset's manifest schema accepts only plain X.Y.Z (no "-rc1"); stage a
+    # release candidate as a GitHub prerelease of the final number instead.
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        fail(f"version {version!r} must be X.Y.Z; Superset rejects anything else")
+
     versions = read_versions(ext_dir, ext)
     if len(set(versions.values())) != 1:
         listing = "\n".join(f"  {k}: {v}" for k, v in versions.items())

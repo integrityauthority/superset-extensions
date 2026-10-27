@@ -31,6 +31,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
@@ -41,6 +44,7 @@ from superset.extensions import db
 from superset.models.slice import Slice
 from superset.sql.parse import Table
 
+from ai_assistant import dashboards as dashboard_tools
 from ai_assistant.access import (
     AccessDenied,
     audit,
@@ -55,6 +59,24 @@ from ai_assistant.access import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Tools that create or change Superset objects. A read-only session (an MCP
+# call without allow_changes) refuses them.
+WRITE_TOOLS = {
+    "create_chart", "update_chart", "update_dataset",
+    "create_dashboard", "update_dashboard",
+}
+_read_only: ContextVar[bool] = ContextVar("vambery_read_only", default=False)
+
+
+@contextmanager
+def read_only_session(enabled: bool = True) -> Iterator[None]:
+    token = _read_only.set(enabled)
+    try:
+        yield
+    finally:
+        _read_only.reset(token)
 
 
 class QueryFailed(Exception):
@@ -379,6 +401,26 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "open_sql_tab",
+            "description": (
+                "Open the query in a NEW SQL Lab tab and run it there, leaving the "
+                "user's current editor untouched. Use this instead of set_editor_sql "
+                "when the editor already holds the user's own work, or when the "
+                "user asks for a separate query. Validated like set_editor_sql."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string"},
+                    "title": {"type": "string", "description": "Short tab title"},
+                },
+                "required": ["sql"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_chart",
             "description": (
                 "Create a chart visualization from query results. "
@@ -422,10 +464,15 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     },
                     "y_aggregate": {
                         "type": "string",
-                        "enum": ["SUM", "COUNT", "AVG", "MAX", "MIN"],
+                        "enum": [
+                            "SUM", "COUNT", "AVG", "MAX", "MIN",
+                            "COUNT_DISTINCT", "MEDIAN", "STDDEV_SAMP", "VAR_SAMP",
+                        ],
                         "description": (
                             "Aggregate function for the Y column metric. "
-                            "Default: SUM. Use COUNT for counting rows."
+                            "Default: SUM. Use COUNT for counting rows. MEDIAN, "
+                            "STDDEV_SAMP and VAR_SAMP need a database that supports "
+                            "them (PostgreSQL yes; SQL Server and MySQL MEDIAN no)."
                         ),
                     },
                     "group_by": {
@@ -1150,14 +1197,21 @@ def _extract_entity_from_question(question: str) -> str | None:
         r'\b([A-Za-z0-9][-A-Za-z0-9&]{1,5})\b',
         question,
     )
+    words = question.split()
+    first_word = words[0] if words else ""
     for cand in short_candidates:
+        if cand.upper() in skip_kw or cand.upper() in skip_short:
+            continue
         upper_count = sum(1 for c in cand if c.isupper())
-        if upper_count >= 1 and cand.upper() not in skip_kw and cand.upper() not in skip_short:
-            # Must look "name-like": either mostly uppercase or digit+uppercase mix
-            alpha_chars = [c for c in cand if c.isalpha()]
-            if alpha_chars and (upper_count / len(alpha_chars)) >= 0.3:
-                logger.info("DISCOVER: extracted short entity '%s' from question", cand)
-                return cand
+        has_digit = any(c.isdigit() for c in cand)
+        # Name-like means two or more capitals (OTP, MOL, K&H) or a digit with a
+        # capital (4iG). A single capital is just a capitalised word — "How",
+        # "Add", "Mennyi" at the start of a sentence are not company names.
+        if upper_count >= 2 or (has_digit and upper_count >= 1):
+            if first_word.startswith(cand) and not cand.isupper() and not has_digit:
+                continue
+            logger.info("DISCOVER: extracted short entity '%s' from question", cand)
+            return cand
 
     return None
 
@@ -2637,7 +2691,12 @@ def tool_create_dashboard(
 FRONTEND_ACTIONS: set[str] = {"ask_user", "update_todo"}
 
 # Tools whose results contain actions to relay to the frontend
-TOOLS_WITH_ACTIONS = {"set_editor_sql", "create_chart", "create_dashboard", "ask_user", "update_todo"}
+TOOLS_WITH_ACTIONS = {
+    "set_editor_sql", "open_sql_tab", "create_chart", "create_dashboard",
+    "update_dashboard", "ask_user", "update_todo",
+}
+
+TOOL_DEFINITIONS.extend(dashboard_tools.TOOL_DEFINITIONS)
 
 
 def execute_tool(
@@ -2659,6 +2718,14 @@ def execute_tool(
     if tool_name in FRONTEND_ACTIONS:
         # These actions are relayed to the frontend
         return {"action": tool_name, **arguments}
+
+    if tool_name in WRITE_TOOLS and _read_only.get():
+        return {
+            "error": (
+                "This session is read-only: charts, datasets and dashboards cannot "
+                "be created or changed. Answer with the data and the SQL instead."
+            )
+        }
 
     audit(
         tool_name,
@@ -2731,6 +2798,37 @@ def _dispatch(
             sql=arguments["sql"],
             schema_name=schema_name,
             catalog=catalog,
+        )
+
+    if tool_name == "open_sql_tab":
+        result = tool_set_editor_sql(
+            database_id=database_id,
+            sql=arguments["sql"],
+            schema_name=schema_name,
+            catalog=catalog,
+        )
+        if result.get("action"):
+            result = {"action": "open_sql_tab", "sql": arguments["sql"],
+                      "title": arguments.get("title")}
+        return result
+
+    if tool_name == "list_dashboards":
+        return dashboard_tools.tool_list_dashboards(search=arguments.get("search"))
+
+    if tool_name == "get_dashboard":
+        return dashboard_tools.tool_get_dashboard(arguments["dashboard_id"])
+
+    if tool_name == "update_dashboard":
+        return dashboard_tools.tool_update_dashboard(
+            dashboard_id=arguments["dashboard_id"],
+            dashboard_title=arguments.get("dashboard_title"),
+            description=arguments.get("description"),
+            published=arguments.get("published"),
+            add_chart_ids=arguments.get("add_chart_ids"),
+            remove_chart_ids=arguments.get("remove_chart_ids"),
+            chart_order=arguments.get("chart_order"),
+            add_filters=arguments.get("add_filters"),
+            remove_filters=arguments.get("remove_filters"),
         )
 
     if tool_name == "execute_sql":

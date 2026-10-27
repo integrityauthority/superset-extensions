@@ -28,6 +28,14 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { sqlLab, authentication, theme as themeApi } from "@apache-superset/core";
 import { useConversationStorage } from "./useConversationStorage";
+import SettingsPanel from "./SettingsPanel";
+import {
+  clearAllConversations,
+  DEFAULT_SETTINGS,
+  loadSettings,
+  saveSettings,
+  UserSettings,
+} from "./conversationStorage";
 import {
   safeGetCurrentTab,
   isSqlLabContext,
@@ -36,6 +44,13 @@ import {
   getDisplayMode,
   onDisplayModeChange,
 } from "./hostCapabilities";
+import {
+  explainFailurePrompt,
+  getLastFailure,
+  onFailureChange,
+  onPromptRequest,
+  QueryFailure,
+} from "./sqlLabBridge";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import {
@@ -78,6 +93,11 @@ interface EditorAction {
   options?: { id: string; label: string }[];
   // update_todo action fields
   items?: TodoItem[];
+  // open_sql_tab action fields
+  title?: string;
+  // open_dashboard action fields (create_dashboard, update_dashboard)
+  dashboard_url?: string;
+  dashboard_title?: string;
 }
 
 interface TodoItem {
@@ -92,6 +112,10 @@ interface ChatContext {
   schema: string | null;
   catalog: string | null;
   current_sql: string;
+  /** What the user has selected in the editor, if anything. */
+  selected_sql?: string;
+  /** "en" or "hu" to fix the answer language; absent = follow the question. */
+  answer_language?: string;
   model_override?: string;
   provider_override?: string;
 }
@@ -804,6 +828,32 @@ const ChatPanel: React.FC = () => {
   const [defaultModelId, setDefaultModelId] = useState<string>("");
   const [modelsLoaded, setModelsLoaded] = useState(false);
 
+  // Per-user settings (favourite models, answer language)
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
+  const [showSettings, setShowSettings] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    loadSettings().then((loaded) => {
+      if (!cancelled) setSettings(loaded);
+    });
+    return () => { cancelled = true; };
+  }, []);
+  const updateSettings = useCallback((next: UserSettings) => {
+    setSettings(next);
+    void saveSettings(next);
+  }, []);
+
+  // Favourites first; only favourites (plus the current pick) when asked to.
+  const pickerModels = useMemo(() => {
+    const fav = new Set(settings.favoriteModels);
+    const favourites = availableModels.filter((m) => fav.has(m.id));
+    const rest = availableModels.filter((m) => !fav.has(m.id));
+    if (!settings.showAllModels && favourites.length > 0) {
+      return favourites.concat(rest.filter((m) => m.id === selectedModelId));
+    }
+    return favourites.concat(rest);
+  }, [availableModels, settings, selectedModelId]);
+
   // Edit prompt state
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
@@ -869,11 +919,13 @@ const ChatPanel: React.FC = () => {
   const getContext = useCallback(async (): Promise<ChatContext> => {
     const tab = safeGetCurrentTab();
     let currentSql = "";
+    let selectedSql = "";
 
     if (tab) {
       try {
         const editor = await tab.getEditor();
         currentSql = editor.getValue() || "";
+        selectedSql = editor.getSelectedText() || "";
       } catch (e) {
         console.warn("[Vambery AI] Could not get editor content:", e);
       }
@@ -885,6 +937,8 @@ const ChatPanel: React.FC = () => {
       schema: tab?.schema || null,
       catalog: tab?.catalog || null,
       current_sql: currentSql,
+      selected_sql: selectedSql.trim() || undefined,
+      answer_language: settings.language !== "auto" ? settings.language : undefined,
     };
     // Parse selected "provider/model" id to override if different from default
     if (selectedModelId && selectedModelId !== defaultModelId) {
@@ -895,7 +949,7 @@ const ChatPanel: React.FC = () => {
       }
     }
     return ctx;
-  }, [selectedModelId, defaultModelId, availableModels]);
+  }, [selectedModelId, defaultModelId, availableModels, settings.language]);
 
   // Apply a single action immediately (called as actions stream in)
   const applyAction = useCallback(async (action: EditorAction): Promise<boolean> => {
@@ -923,6 +977,25 @@ const ChatPanel: React.FC = () => {
         } catch (e) {
           console.error("[Vambery AI] Failed to set editor SQL:", e);
         }
+      }
+    }
+
+    // New SQL Lab tab with the query, then run it there
+    if (action.type === "open_sql_tab" && action.sql) {
+      const tab = safeGetCurrentTab();
+      try {
+        await sqlLab.createTab({
+          sql: action.sql,
+          title: action.title,
+          databaseId: tab?.databaseId,
+          catalog: tab?.catalog,
+          schema: tab?.schema,
+        });
+        await new Promise((r) => setTimeout(r, 300));
+        await sqlLab.executeQuery();
+        return true;
+      } catch (e) {
+        console.error("[Vambery AI] Failed to open a new SQL tab:", e);
       }
     }
 
@@ -967,8 +1040,8 @@ const ChatPanel: React.FC = () => {
   }, [applyAction]);
 
   // Send message handler — uses SSE streaming
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
+  const sendText = useCallback(async (raw: string) => {
+    const text = raw.trim();
     if (!text || loading) return;
 
     const userMessage: ChatMessage = {
@@ -1075,7 +1148,30 @@ const ChatPanel: React.FC = () => {
       setLoading(false);
       setStreamingSteps([]);
     }
-  }, [input, loading, messages, getContext, applyAction]);
+  }, [loading, messages, getContext, applyAction]);
+
+  const handleSend = useCallback(() => sendText(input), [sendText, input]);
+
+  // Requests from the SQL Lab toolbar ("Ask Vambery", "Explain and fix").
+  // A ref keeps the subscription stable while sendText changes every render.
+  const sendTextRef = useRef(sendText);
+  sendTextRef.current = sendText;
+  useEffect(
+    () =>
+      onPromptRequest(({ text, send }) => {
+        if (send) {
+          void sendTextRef.current(text);
+        } else {
+          setInput(text);
+          textAreaRef.current?.focus();
+        }
+      }),
+    [],
+  );
+
+  // The last failed SQL Lab query, offered for "Explain and fix"
+  const [queryFailure, setQueryFailure] = useState<QueryFailure | null>(getLastFailure);
+  useEffect(() => onFailureChange(setQueryFailure), []);
 
   // Handle Enter key (Shift+Enter for newline)
   const handleKeyDown = useCallback(
@@ -1323,10 +1419,45 @@ const ChatPanel: React.FC = () => {
             &#x2713; saved
           </span>
         )}
+        <button
+          type="button"
+          onClick={() => setShowSettings((v) => !v)}
+          title="Settings"
+          aria-label="Settings"
+          style={{
+            marginLeft: "auto",
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            color: theme.colorTextSecondary,
+            fontSize: theme.fontSizeLG,
+          }}
+        >
+          &#x2699;
+        </button>
       </div>
 
+      {showSettings && (
+        <SettingsPanel
+          models={availableModels}
+          settings={settings}
+          selectedModelId={selectedModelId}
+          theme={theme}
+          onChange={updateSettings}
+          onSelectModel={(id) => {
+            setSelectedModelId(id);
+            persistModelPreference(id);
+          }}
+          onClearAll={async () => {
+            await clearAllConversations();
+            storage.clearConversation();
+          }}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+
       {/* Messages area */}
-      <div style={styles.messagesContainer}>
+      <div style={showSettings ? { display: "none" } : styles.messagesContainer}>
         {messages.length === 0 && !loading && (
           <div style={styles.emptyState}>
             <div style={styles.emptyIcon}>&#x1F4AC;</div>
@@ -1475,6 +1606,19 @@ const ChatPanel: React.FC = () => {
                         &#x1F4CA; View Chart: {chartAction.chart_name || "Untitled"}
                       </button>
                     ))}
+                {msg.actions &&
+                  msg.actions
+                    .filter((a) => a.type === "open_dashboard" && a.dashboard_url)
+                    .map((dashAction, aIdx) => (
+                      <button
+                        key={`dashboard-${aIdx}`}
+                        style={styles.chartButton}
+                        onClick={() => window.open(dashAction.dashboard_url, "_blank")}
+                        type="button"
+                      >
+                        &#x1F5C2; Open Dashboard{dashAction.dashboard_title ? `: ${dashAction.dashboard_title}` : ""}
+                      </button>
+                    ))}
               </>
             )}
           </div>
@@ -1584,8 +1728,36 @@ const ChatPanel: React.FC = () => {
         </div>
       )}
 
+      {sqlLabActive && queryFailure && !loading && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: theme.paddingXS,
+            padding: theme.paddingXS,
+            margin: `0 ${theme.paddingSM}px`,
+            borderRadius: theme.borderRadiusSM,
+            background: theme.colorErrorBg,
+            color: theme.colorError,
+            fontSize: theme.fontSizeSM,
+          }}
+        >
+          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                title={queryFailure.error}>
+            Last query failed: {queryFailure.error.split("\n")[0]}
+          </span>
+          <button
+            type="button"
+            style={styles.clearButton}
+            onClick={() => sendText(explainFailurePrompt(queryFailure))}
+          >
+            Explain and fix
+          </button>
+        </div>
+      )}
+
       {/* Input area */}
-      <div style={styles.inputContainer}>
+      <div style={showSettings ? { display: "none" } : styles.inputContainer}>
         <textarea
           ref={textAreaRef}
           style={styles.textArea}
@@ -1612,7 +1784,7 @@ const ChatPanel: React.FC = () => {
               disabled={loading}
               title="Select AI model"
             >
-              {availableModels.map((m) => (
+              {pickerModels.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.provider}/{m.label}
                 </option>

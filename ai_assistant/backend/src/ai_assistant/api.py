@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Generator
+from typing import Any, Generator
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
@@ -83,6 +83,32 @@ def _check_auth():
         return jsonify({"error": "Authentication check failed"}), 503
 
 
+_ANSWER_LANGUAGES = {"en": "English", "hu": "Hungarian"}
+
+
+def _attach_context(
+    messages: list[dict[str, Any]],
+    selected_sql: str | None,
+    answer_language: str | None,
+) -> list[dict[str, Any]]:
+    """Add the editor selection and the user's language choice to their message.
+
+    Both belong to the question being asked now, so they go into the latest
+    user message (a copy) rather than the system prompt.
+    """
+    if not messages or messages[-1].get("role") != "user":
+        return messages
+    last = messages[-1]
+    block = ""
+    if selected_sql and selected_sql.strip():
+        block += f"\n\nSelected in the editor:\n```sql\n{selected_sql.strip()}\n```"
+    if answer_language in _ANSWER_LANGUAGES:
+        block += f"\n\n(Answer in {_ANSWER_LANGUAGES[answer_language]}.)"
+    if not block:
+        return messages
+    return [*messages[:-1], {**last, "content": f"{last.get('content', '')}{block}"}]
+
+
 def _check_database(database_id: int) -> tuple[Response, int] | None:
     """Refuse a chat about a database the user cannot use in SQL Lab."""
     from ai_assistant.access import AccessDenied, get_database
@@ -135,6 +161,9 @@ def chat() -> tuple[Response, int] | Response:
         return jsonify({"error": "At least one message is required"}), 400
 
     context = data.get("context", {})
+    messages = _attach_context(
+        messages, context.get("selected_sql"), context.get("answer_language")
+    )
     database_id = context.get("database_id")
     if not database_id:
         return jsonify({"error": "database_id is required in context"}), 400
@@ -190,6 +219,9 @@ def chat_stream() -> tuple[Response, int] | Response:
         return jsonify({"error": "At least one message is required"}), 400
 
     context = data.get("context", {})
+    messages = _attach_context(
+        messages, context.get("selected_sql"), context.get("answer_language")
+    )
     database_id = context.get("database_id")
     if not database_id:
         return jsonify({"error": "database_id is required in context"}), 400
@@ -256,6 +288,9 @@ def list_models() -> tuple[Response, int] | Response:
         ]
     }
     """
+    auth_error = _check_auth()
+    if auth_error:
+        return auth_error
     try:
         config = get_ai_config()
         active_provider = config.get("provider", "unknown")
@@ -264,13 +299,16 @@ def list_models() -> tuple[Response, int] | Response:
         # --- Azure OpenAI ---
         azure_cfg = config.get("azure_openai", {})
         if azure_cfg.get("api_key") and azure_cfg.get("azure_endpoint"):
-            model = azure_cfg.get("deployment_name", "gpt-4o")
-            all_models.append({
-                "id": f"azure_openai/{model}",
-                "provider": "azure_openai",
-                "model": model,
-                "label": model,
-            })
+            from ai_assistant.llm import list_azure_deployments
+
+            for dep in list_azure_deployments(azure_cfg):
+                label = dep["name"] if dep["model"] == dep["name"] else f"{dep['name']} ({dep['model']})"
+                all_models.append({
+                    "id": f"azure_openai/{dep['name']}",
+                    "provider": "azure_openai",
+                    "model": dep["name"],
+                    "label": label,
+                })
 
         # --- OpenAI ---
         openai_cfg = config.get("openai", {})

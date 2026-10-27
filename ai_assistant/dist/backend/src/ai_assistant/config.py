@@ -77,6 +77,12 @@ AZURE_ENV_MAPPING: dict[str, str] = {
     "api_version": "AZURE_OPENAI_API_VERSION",
     "azure_endpoint": "AZURE_OPENAI_ENDPOINT",
     "deployment_name": "AZURE_OPENAI_DEPLOYMENT",
+    # Optional: force a reasoning effort ("none", "low", ...). Unset, Vambery
+    # sends none and switches to "none" only for models that require it.
+    "reasoning_effort": "AZURE_OPENAI_REASONING_EFFORT",
+    # Optional comma-separated allow-list for the model picker. Unset, the
+    # resource's chat-capable deployments are discovered.
+    "deployments": "AZURE_OPENAI_DEPLOYMENTS",
 }
 
 OLLAMA_ENV_MAPPING: dict[str, str] = {

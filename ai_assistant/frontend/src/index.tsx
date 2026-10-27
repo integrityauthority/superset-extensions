@@ -29,6 +29,7 @@
 import * as core from "@apache-superset/core";
 import ChatPanel from "./ChatPanel";
 import VamberyTrigger from "./VamberyTrigger";
+import { registerSqlLabIntegration } from "./sqlLabBridge";
 
 const CHAT_ID = "integrityauthority.vambery";
 const DISPLAY_NAME = "Vambery AI Agent";
@@ -46,4 +47,10 @@ try {
   console.log("[Vambery AI Agent] Extension activated (core.chat)");
 } catch (e) {
   console.error("[Vambery AI Agent] core.chat registration failed:", e);
+}
+
+try {
+  registerSqlLabIntegration();
+} catch (e) {
+  console.error("[Vambery AI Agent] SQL Lab integration failed:", e);
 }

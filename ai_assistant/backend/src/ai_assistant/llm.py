@@ -25,6 +25,7 @@ Providers: Azure OpenAI, OpenAI (+ OpenRouter), Ollama.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 import requests
 
@@ -68,6 +69,85 @@ def list_ollama_models(base_url: str) -> list[dict[str, Any]]:
             url, ex,
         )
         return []
+
+
+# Deployments that cannot chat: embeddings, speech, images.
+_NON_CHAT_MODELS = ("embedding", "whisper", "tts", "dall-e", "gpt-image", "transcribe", "sora")
+_AZURE_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
+_AZURE_CACHE_SECONDS = 600
+
+
+def list_azure_deployments(config: dict[str, Any]) -> list[dict[str, str]]:
+    """Chat-capable deployments of the Azure OpenAI resource.
+
+    ``config["deployments"]`` (comma-separated, env AZURE_OPENAI_DEPLOYMENTS)
+    is an allow-list; without it the resource is asked, and the answer is
+    cached for ten minutes. Falls back to the configured deployment alone.
+    """
+    default = config.get("deployment_name", "")
+    allowed = [d.strip() for d in str(config.get("deployments") or "").split(",") if d.strip()]
+    if allowed:
+        return [{"name": d, "model": d} for d in allowed]
+
+    endpoint = str(config.get("azure_endpoint", "")).rstrip("/")
+    cached = _AZURE_CACHE.get(endpoint)
+    if cached and time.time() - cached[0] < _AZURE_CACHE_SECONDS:
+        return cached[1]
+    try:
+        # The deployments listing exists only in this older data-plane version.
+        resp = requests.get(
+            f"{endpoint}/openai/deployments",
+            params={"api-version": "2022-12-01"},
+            headers={"api-key": config["api_key"]},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        found = [
+            {"name": d["id"], "model": d.get("model", d["id"])}
+            for d in resp.json().get("data", [])
+            if d.get("status", "succeeded") == "succeeded"
+            and not any(k in d.get("model", d["id"]).lower() for k in _NON_CHAT_MODELS)
+        ]
+    except Exception as ex:  # noqa: BLE001
+        logger.warning("Could not list Azure OpenAI deployments: %s", ex)
+        found = []
+    if default and default not in {d["name"] for d in found}:
+        found.insert(0, {"name": default, "model": default})
+    _AZURE_CACHE[endpoint] = (time.time(), found)
+    return found
+
+
+# Deployments that refused function tools while reasoning was on. Newer
+# reasoning models (e.g. gpt-6-luna) reject tools on /chat/completions unless
+# reasoning_effort is "none", while others (gpt-5.2-chat) reject "none", so the
+# parameter is only sent where the model asked for it.
+_NO_REASONING_WITH_TOOLS: set[str] = set()
+
+
+def _create_completion(client: Any, kwargs: dict[str, Any], configured_effort: str | None) -> Any:
+    """Call chat.completions.create, adapting reasoning_effort to the model."""
+    model = kwargs["model"]
+    if configured_effort:
+        kwargs["reasoning_effort"] = configured_effort
+    elif kwargs.get("tools") and model in _NO_REASONING_WITH_TOOLS:
+        kwargs["reasoning_effort"] = "none"
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as ex:  # openai.BadRequestError; imported lazily
+        message = str(ex)
+        if (
+            configured_effort
+            or "reasoning_effort" in kwargs
+            or not kwargs.get("tools")
+            or "reasoning_effort" not in message
+        ):
+            raise
+        logger.info(
+            "Model %s refuses tools with reasoning on; retrying with reasoning_effort=none",
+            model,
+        )
+        _NO_REASONING_WITH_TOOLS.add(model)
+        return client.chat.completions.create(**{**kwargs, "reasoning_effort": "none"})
 
 
 def create_chat_completion(
@@ -120,8 +200,10 @@ def _azure_openai_completion(
         azure_endpoint=config["azure_endpoint"],
     )
 
+    # A model picked in the chat panel arrives as "model" and names a deployment.
+    deployment = config.get("model") or config["deployment_name"]
     kwargs: dict[str, Any] = {
-        "model": config["deployment_name"],
+        "model": deployment,
         "messages": messages,
     }
     if tools:
@@ -130,12 +212,12 @@ def _azure_openai_completion(
 
     logger.debug(
         "Azure OpenAI request: model=%s, messages=%d, tools=%s",
-        config["deployment_name"],
+        deployment,
         len(messages),
         len(tools) if tools else 0,
     )
 
-    response = client.chat.completions.create(**kwargs)
+    response = _create_completion(client, kwargs, config.get("reasoning_effort"))
     choice = response.choices[0]
 
     result: dict[str, Any] = {
@@ -203,7 +285,7 @@ def _openai_completion(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
-    response = client.chat.completions.create(**kwargs)
+    response = _create_completion(client, kwargs, config.get("reasoning_effort"))
     choice = response.choices[0]
 
     result: dict[str, Any] = {

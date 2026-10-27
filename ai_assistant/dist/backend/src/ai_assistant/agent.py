@@ -120,6 +120,9 @@ and manage Superset datasets and charts.
 - **Browse and manage Superset datasets** (list, inspect, edit)
 - **Browse and manage Superset charts** (list, inspect, edit)
 - **Create dashboards** from saved charts (`create_dashboard`)
+- **Find, inspect and edit existing dashboards** (`list_dashboards`, `get_dashboard`, `update_dashboard`: title, charts, order, native filters)
+- **Query a dataset by its metric and column names** (`query_dataset`)
+- **Open a query in a new SQL Lab tab** (`open_sql_tab`) without touching the current editor
 - **Ask clarification questions** with clickable option buttons (`ask_user`)
 - **Show task progress** with a visible todo checklist (`update_todo`)
 
@@ -218,12 +221,26 @@ than to skip one they wanted.
 - **Self-check after chart creation**: verify the tool returned a URL, not an error. If it \
 failed, debug the issue (wrong column name, SQL error, etc.) and try again.
 
+## Edit What Exists — Do Not Duplicate
+Users mostly want their existing charts, dashboards and datasets changed, not new copies.
+- When the user refers to something that already exists ("the sales dashboard", "that chart", "add a filter"), find it first (`list_dashboards`, `list_charts`, `list_datasets`) and edit it in place (`update_dashboard`, `update_chart`, `update_dataset`).
+- Create something new only when the user asks for something new, or when nothing matching exists. If several objects match, ask with `ask_user` which one they mean.
+- Superset keeps a **version history** of charts, dashboards and datasets: every edit can be reviewed and reverted there. Mention this when you change something.
+- If a tool answers "Permission denied" or "not an editor", tell the user plainly; do not try to work around it, for example by creating a copy.
+- Objects marked as managed externally cannot be edited here; say so.
+
+## Superset Specifics
+- `query_dataset` uses a dataset's own metric definitions; prefer it when the user asks for a number the dataset already defines as a metric. Free-form questions stay on SQL.
+- Metric aggregates available in charts include MEDIAN, STDDEV_SAMP and VAR_SAMP, but only on databases that support them (PostgreSQL does; SQL Server does not).
+- Do not query `information_schema` or system catalogs for exploration: SQL Lab blocks them by default. Use list_tables, list_views and get_table_columns instead.
+- When the user's message contains a "Selected in the editor" block, "this" and "it" refer to that SQL.
+
 ## Dataset Management
 - Use `list_datasets` to see what datasets are already registered in Superset for the \
 current database.
 - Use `get_dataset` to inspect a dataset's full configuration: columns, metrics, SQL, description.
 - Use `update_dataset` ONLY when the user **explicitly asks** to edit or update a dataset. \
-This includes changing descriptions, column metadata, or SQL for virtual datasets.
+This includes descriptions, column metadata, SQL for virtual datasets, **metrics** and **calculated columns**.
 - **Never modify datasets without the user's explicit request.** When the user asks you to \
 edit a dataset, confirm what you will change before calling update_dataset.
 
@@ -857,11 +874,15 @@ def _run_step_tools(
                 # Keep a compact snippet for the checker. Include the SQL that
                 # actually ran — the executor often rewrites the planned query —
                 # so the checker can judge aggregate semantics, not just row counts.
-                snippet = json.dumps(tool_result, default=str)[:500]
-                executed_sql = tool_args.get("sql")
-                if isinstance(executed_sql, str) and executed_sql.strip():
-                    snippet = f"Executed SQL: {executed_sql[:1500]}\nResult: {snippet}"
-                last_context_snippet = snippet
+                # Progress and questions carry no data; keep the last real result.
+                if tool_name not in ("update_todo", "ask_user"):
+                    snippet = json.dumps(tool_result, default=str)[:500]
+                    executed_sql = tool_args.get("sql")
+                    if isinstance(executed_sql, str) and executed_sql.strip():
+                        snippet = f"Executed SQL: {executed_sql[:1500]}\nResult: {snippet}"
+                    last_context_snippet = snippet
+                if tool_name in ("set_editor_sql", "open_sql_tab") and "error" not in tool_result:
+                    step._editor_sql = tool_args.get("sql")  # type: ignore[attr-defined]
 
                 # Yield step event
                 yield {
@@ -1062,8 +1083,8 @@ def _run_planner_stream(
                 "data": {
                     "type": "ask_user",
                     "question": (
-                        f"Több találat is van \"{extracted}\" keresésre. "
-                        f"Melyik cégre gondoltál?"
+                        f"Several matches for \"{extracted}\" — which one do you mean? / "
+                        f"Több találat is van \"{extracted}\" keresésre — melyikre gondoltál?"
                     ),
                     "options": options,
                 },
@@ -1072,7 +1093,10 @@ def _run_planner_stream(
             yield {
                 "event": "response",
                 "data": {
-                    "response": "Kérlek válaszd ki a megfelelő céget a listából.",
+                    "response": (
+                        "Please pick the one you mean from the list. / "
+                        "Kérlek, válaszd ki a listából, melyikre gondoltál."
+                    ),
                     "usage": total_usage,
                     "plan_state": plan_state_for_resume,
                 },
@@ -1316,8 +1340,15 @@ def _run_planner_stream(
         step.status = "done"
         step.result_summary = step_summary[:300] if step_summary else step.result_summary
 
-        # Update PlanContext with step results
-        plan.context.step_results[str(step.step_id)] = step.result_summary or "(no summary)"
+        # Update PlanContext with step results. The final summary is written
+        # from these alone, so they carry the SQL and data, not just the
+        # executor's closing remark.
+        step_record = step.result_summary or "(no summary)"
+        if step.context_snippet:
+            step_record += f"\n  Last query and result: {step.context_snippet}"
+        if getattr(step, "_editor_sql", None):
+            step_record += f"\n  SQL placed in the editor: {step._editor_sql[:1500]}"  # type: ignore[attr-defined]
+        plan.context.step_results[str(step.step_id)] = step_record
 
         # Collect chart IDs from step
         for cid in getattr(step, "_chart_ids", []):

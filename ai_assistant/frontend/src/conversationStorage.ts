@@ -79,6 +79,9 @@ export interface EditorActionData {
   question?: string;
   options?: { id: string; label: string }[];
   items?: TodoItemData[];
+  title?: string;
+  dashboard_url?: string;
+  dashboard_title?: string;
 }
 
 export interface TodoItemData {
@@ -234,6 +237,64 @@ export async function deleteConversation(tabId: string): Promise<void> {
     delete all[tabId];
     await saveAllConversations(all);
   });
+}
+
+/** Delete every stored conversation of this user (all SQL Lab tabs). */
+export async function clearAllConversations(): Promise<void> {
+  return enqueueWrite(async () => {
+    const storage = getStorage();
+    if (!isStorageAvailable() || !storage) return;
+    try {
+      await storage.persistent.remove(CONVERSATIONS_KEY);
+    } catch (err) {
+      console.warn("[Vambery] Failed to clear conversations:", err);
+    }
+  });
+}
+
+// -------------------------------------------------------------------------
+// User settings (Tier 3: persistent, user-scoped — follows the user across
+// browsers). Admin defaults (provider, default model) stay in Superset's
+// config; these only adjust them per user.
+// -------------------------------------------------------------------------
+
+export type AnswerLanguage = "auto" | "en" | "hu";
+
+export interface UserSettings {
+  /** Model ids ("provider/model") shown first, or alone when showAllModels is off */
+  favoriteModels: string[];
+  showAllModels: boolean;
+  language: AnswerLanguage;
+}
+
+export const DEFAULT_SETTINGS: UserSettings = {
+  favoriteModels: [],
+  showAllModels: true,
+  language: "auto",
+};
+
+const SETTINGS_KEY = "settings.v1";
+
+export async function loadSettings(): Promise<UserSettings> {
+  const storage = getStorage();
+  if (!isStorageAvailable() || !storage) return DEFAULT_SETTINGS;
+  try {
+    const stored = await storage.persistent.get<Partial<UserSettings>>(SETTINGS_KEY);
+    return { ...DEFAULT_SETTINGS, ...(stored ?? {}) };
+  } catch (err) {
+    console.warn("[Vambery] Failed to load settings:", err);
+    return DEFAULT_SETTINGS;
+  }
+}
+
+export async function saveSettings(settings: UserSettings): Promise<void> {
+  const storage = getStorage();
+  if (!isStorageAvailable() || !storage) return;
+  try {
+    await storage.persistent.set<UserSettings>(SETTINGS_KEY, settings);
+  } catch (err) {
+    console.warn("[Vambery] Failed to save settings:", err);
+  }
 }
 
 // -------------------------------------------------------------------------

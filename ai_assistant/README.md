@@ -1,52 +1,76 @@
 # Vambery AI Agent
 
-An AI-powered SQL assistant for Apache Superset (7.0+ from 0.8; 0.7.x supports 6.1+). It helps users explore
-databases, write SQL queries, manage datasets and charts, and create visualizations
-through a conversational interface.
+An AI agent for Apache Superset **7.0+**. It explores databases, writes and runs
+SQL, builds charts and dashboards, and edits the ones you already have, through a
+chat panel available on every page — and, for other programs, through Superset's
+MCP server.
 
-Where it appears depends on the host version — the extension detects this at runtime
-and registers itself accordingly, so a single build runs on all of them:
+| Superset | Vambery | Surface | Conversation storage |
+|----------|---------|---------|----------------------|
+| **7.0+** | 0.8 and newer | Official chat surface (`core.chat`): floating bubble or docked panel on every page, plus buttons in the SQL Lab editor | Extensions Storage API, per user (not encrypted yet — see below) |
+| 6.1 / 6.2 | [0.7.x](https://github.com/integrityauthority/superset-extensions/releases/tag/v0.7.0) only | SQL Lab sidebar (6.1), chat surface (6.2) | in memory |
 
-| Superset | Surface | Conversation storage |
-|----------|---------|----------------------|
-| **6.1.x** | SQL Lab right sidebar (`views` contribution) | in-memory only |
-| **6.2+** | Official chat surface (`core.chat`, SIP-214) — floating bubble or docked panel, available on every page | in-memory only |
-| **7.0+** | Official chat surface | persisted via the Extensions Storage API (not encrypted — see below) |
+> **0.7.x is the last line that supports Superset 6.x.** It gets no new features.
+> Upgrade Superset to 7.0 before moving to 0.8 or newer.
 
-> On 6.2+ the panel can open anywhere, but the agent needs a SQL Lab tab for its
-> database context. Outside SQL Lab it shows a notice and blocks input rather than
-> failing on every message.
-
-> **0.7.x is the last line that supports Superset 6.x.** From 0.8 on, Vambery
-> requires **Superset 7.0 or newer** and drops the SQL Lab sidebar fallback. Stay on
-> [v0.7.0](https://github.com/integrityauthority/superset-extensions/releases/tag/v0.7.0)
-> until you have upgraded Superset.
+> The agent works on the database of a SQL Lab tab. On other pages the panel
+> shows a notice instead of failing on every message.
 
 > **Named after [Ármin Vámbéry](https://en.wikipedia.org/wiki/%C3%81rmin_V%C3%A1mb%C3%A9ry)** — the Hungarian orientalist, traveler, and polyglot who explored unknown territories. Like its namesake, Vambery navigates your data landscape so you don't have to.
 
 ## Features
 
-- **Natural language to SQL** — describe what you need, the AI writes the query
-- **Schema-aware** — inspects databases, schemas, **tables and views** before writing queries
-- **Views support** — automatically discovers and uses database views alongside tables
-- **Rich metadata** — uses table comments, column descriptions, verbose names, and predefined Superset metrics
-- **Dialect-aware** — detects the connected database engine (MSSQL, PostgreSQL, etc.) and adapts SQL syntax
-- **SQL validation** — uses `sqlglot` for dialect-aware syntax validation before executing queries
-- **Chart creation** — creates bar, line, pie, and table charts from query results
-- **Dataset management** — list, inspect, and edit existing Superset datasets (descriptions, column metadata, SQL)
-- **Chart management** — list, inspect, and edit existing Superset charts (name, viz type, params)
-- **Clarification questions** — asks clickable option buttons when the request is ambiguous (`ask_user`)
-- **Live task progress** — shows a visible todo checklist during multi-step tasks (`update_todo`)
-- **SQL validation** — queries are validated against the database before being placed in the editor
-- **Custom system prompt** — override the built-in system prompt entirely via config or env var
-- **Planner-Checker loop** — LLM-generated execution plan with step-by-step verification, automatic re-planning on failure, and configurable step limits (plan→execute→check→replan)
-- **Send to Editor** — click any SQL code block in the chat to send it to the editor
-- **Streaming** — tool call steps stream to the UI in real-time via SSE
-- **Multi-provider model selector** — combined dropdown shows models from all configured providers (e.g. `azure_openai/gpt-5.2-chat`, `ollama/qwen3.5:122b`), placed near the Send button
-- **Edit former prompts** — click the pencil icon on any previous user message to edit and resend it; subsequent messages are automatically flushed
-- **Persistent task completion** — the agent uses up to 50 tool rounds and is forced to deliver a final answer
-- **Official chat surface** — registers through `core.chat` (SIP-214) on Superset 6.2+, appearing as a floating bubble or docked panel on any page; falls back to the SQL Lab sidebar on older hosts
-- **Persisted conversations** — on Superset 7.0+ conversations are saved per SQL Lab tab through the Extensions Storage API; model preference is remembered too. They are stored **unencrypted** for now: Superset 7.0.0rc2 cannot read back values written with `encrypt: true`, so `ENCRYPT_AT_REST` in `conversationStorage.ts` stays off until that is fixed upstream
+**Acts as you, with your permissions.** Every tool runs as the signed-in user: only
+databases exposed in SQL Lab, only tables you may read (the same check SQL Lab
+applies), only charts, datasets and dashboards you are an editor of. SQL runs
+through Superset, so row-level security applies, and every tool call is logged with
+the user. Queries must be a single read-only statement.
+
+**Answers you can check.**
+- Explores schemas, tables and **views**, and reads column comments, descriptions and
+  predefined metrics before writing SQL.
+- A planner–checker loop plans the steps, runs them, and re-plans when a result is
+  wrong. It is told to fix the grain before any total: the latest revision per key,
+  never the latest arrival; no sums across one-to-many joins.
+- Every reported number comes with the assumptions behind it.
+- Queries are validated against the database before they reach the editor; database
+  errors are reported, not hidden as empty results.
+
+**Works in SQL Lab.**
+- Puts the final query into the editor and runs it, or opens it in a new tab.
+- **Ask Vambery** button in the editor toolbar: asks about the selected SQL (or the
+  whole query).
+- When a query fails, the offending line is marked in the editor and the chat offers
+  **Explain and fix**.
+
+**Edits what already exists.**
+- Charts: name, type, parameters, data source.
+- Datasets: descriptions, column metadata, virtual-dataset SQL, **metrics and
+  calculated columns**.
+- Dashboards: title, description, published state, add / remove / reorder charts,
+  **native filters**.
+- Superset 7.0 keeps a version history of all three, so every change can be reverted.
+- `query_dataset` answers with a dataset's own metric definitions.
+
+**Creates new things when asked:** bar, line, pie and table charts (previews or saved),
+and dashboards from saved charts.
+
+**For other agents (MCP).** Superset's MCP server publishes Vambery as one tool,
+`extensions.integrityauthority.vambery-ai-assistant.ask`. Hermes, Claude Code or any
+MCP client asks a question and gets the answer, the SQL and the assumptions back.
+Read-only unless the call sets `allow_changes`. See [docs/mcp.md](docs/mcp.md).
+
+**Chat.**
+- Streaming steps, a live task checklist, clickable clarification questions.
+- Edit and resend earlier prompts.
+- Conversations saved per SQL Lab tab.
+- **Settings:** the model to start with, favourite models, answer language, deleting
+  your saved conversations.
+
+Conversations are stored **unencrypted** for now: Superset 7.0.0rc2 cannot read back
+values written with `encrypt: true`. The fix is submitted upstream
+([apache/superset#45788](https://github.com/apache/superset/pull/45788));
+`ENCRYPT_AT_REST` in `conversationStorage.ts` goes back on once it is released.
 
 ## LLM Providers
 
@@ -71,11 +95,22 @@ The model must support **function calling / tool use**. Compatible models:
 
 ### Multi-provider model selector
 
-The extension discovers models from ALL configured providers simultaneously.
-Ollama models are auto-discovered via `/api/tags`; Azure/OpenAI returns the
-configured deployment. A combined dropdown near the Send button lets users
-pick any model from any provider per question (e.g. `azure_openai/gpt-5.2-chat`
-or `ollama/qwen3.5:122b`) without restarting Superset.
+The extension discovers models from ALL configured providers at once, every time
+the panel loads:
+
+- **Ollama** models come from `/api/tags`.
+- **Azure OpenAI** deployments come from the resource itself (cached for ten
+  minutes). Embedding, speech and image deployments are left out. Set
+  `AZURE_OPENAI_DEPLOYMENTS` (comma-separated) to offer a fixed list instead.
+- **OpenAI** returns the configured model.
+
+Users pick a model per question from one dropdown, without restarting Superset.
+Favourites set in the panel's settings are listed first.
+
+Newer reasoning models on Azure (for example `gpt-6-luna`) refuse tool calls on
+Chat Completions while reasoning is on. Vambery notices the refusal, retries with
+`reasoning_effort: "none"` for that deployment, and remembers it. To force a value
+for every call, set `AZURE_OPENAI_REASONING_EFFORT`.
 
 ## Configuration
 
@@ -146,6 +181,8 @@ AZURE_OPENAI_API_VERSION=2025-03-01-preview
 | `AZURE_OPENAI_ENDPOINT` | `azure_openai.azure_endpoint` | — |
 | `AZURE_OPENAI_DEPLOYMENT` | `azure_openai.deployment_name` | — |
 | `AZURE_OPENAI_API_VERSION` | `azure_openai.api_version` | `2025-03-01-preview` |
+| `AZURE_OPENAI_DEPLOYMENTS` | `azure_openai.deployments` | — (discover from the resource) |
+| `AZURE_OPENAI_REASONING_EFFORT` | `azure_openai.reasoning_effort` | — (adapt per model) |
 | `OLLAMA_BASE_URL` | `ollama.base_url` | — |
 | `OLLAMA_MODEL` | `ollama.model` | — |
 | `AI_SYSTEM_PROMPT_OVERRIDE` | `system_prompt_override` | `""` (uses built-in prompt) |
@@ -158,49 +195,57 @@ AZURE_OPENAI_API_VERSION=2025-03-01-preview
 
 ## Agent Tools
 
-The AI agent has access to 17 tools organized by category:
+The agent has 23 tools. Every one runs with the signed-in user's permissions.
 
 ### Schema Exploration
 
 | Tool | Description |
 |------|-------------|
-| `list_schemas` | Lists all schemas in the connected database |
-| `list_tables` | Lists tables in a schema (tables only) |
-| `list_views` | Lists database views in a schema — views often contain pre-built joins and aggregations |
-| `get_table_columns` | Returns columns with types, comments, descriptions, verbose names, and predefined metrics (works on tables and views) |
-| `sample_table_data` | Returns sample rows from a table or view (configurable limit) |
-| `get_distinct_values` | Returns distinct values for a column (up to 50) |
+| `list_schemas` | Schemas of the connected database you may access |
+| `list_tables` | Tables in a schema you may access |
+| `list_views` | Views in a schema — often pre-built joins and aggregations |
+| `get_table_columns` | Columns with types, comments, descriptions, verbose names and predefined metrics |
+| `sample_table_data` | Sample rows from a table or view |
+| `get_distinct_values` | Distinct values of a column (up to 50) |
 
-### SQL Execution
-
-| Tool | Description |
-|------|-------------|
-| `execute_sql` | Executes SELECT/WITH queries safely (max 50 rows, validated with sqlglot) |
-| `set_editor_sql` | Validates SQL against the database, then sets it in the user's editor. Returns errors for bad queries so the AI can fix and retry. |
-
-### Chart Management
+### SQL
 
 | Tool | Description |
 |------|-------------|
-| `create_chart` | Creates bar, line, pie, or table charts with preview or save |
-| `list_charts` | Lists existing Superset charts (search by name or dataset) |
-| `get_chart` | Gets full chart details: viz_type, params, datasource, explore URL |
-| `update_chart` | Edits chart name, description, viz_type, or params (requires explicit user request) |
+| `execute_sql` | Runs one read-only statement (max 50 rows) behind SQL Lab's access check |
+| `set_editor_sql` | Validates the query against the database, then puts it in the editor and runs it |
+| `open_sql_tab` | Same validation, but opens a new SQL Lab tab and leaves the current editor alone |
+| `query_dataset` | Queries a dataset by its metric and column names (Superset's tabular query layer: RLS, cache, limits) |
+
+### Charts
+
+| Tool | Description |
+|------|-------------|
+| `create_chart` | Bar, line, pie or table chart, as a preview or saved |
+| `list_charts` / `get_chart` | Find charts and read their configuration |
+| `update_chart` | Edit name, description, type, params or data source (editors only) |
+
+### Datasets
+
+| Tool | Description |
+|------|-------------|
+| `list_datasets` / `get_dataset` | Find datasets and read columns, metrics, SQL |
+| `update_dataset` | Edit descriptions, column metadata, virtual SQL, **metrics and calculated columns** (editors only) |
+
+### Dashboards
+
+| Tool | Description |
+|------|-------------|
+| `create_dashboard` | New dashboard from saved charts |
+| `list_dashboards` / `get_dashboard` | Find dashboards; read charts in layout order and native filters |
+| `update_dashboard` | Edit in place: title, description, published, add / remove / reorder charts, add / remove native value filters (editors only) |
 
 ### Interactive
 
 | Tool | Description |
 |------|-------------|
-| `ask_user` | Asks the user a clarification question with clickable option buttons. The user's choice is sent back as their next message. |
-| `update_todo` | Creates or updates a visible task checklist shown to the user as a real-time progress indicator. |
-
-### Dataset Management
-
-| Tool | Description |
-|------|-------------|
-| `list_datasets` | Lists Superset datasets for the current database (search by name) |
-| `get_dataset` | Gets full dataset details: columns, metrics, SQL (virtual), description |
-| `update_dataset` | Edits dataset description, column metadata, or SQL (requires explicit user request) |
+| `ask_user` | A clarification question with clickable options |
+| `update_todo` | The live task checklist |
 
 ## Architecture
 

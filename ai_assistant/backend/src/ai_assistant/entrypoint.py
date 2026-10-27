@@ -129,6 +129,15 @@ from ai_assistant.api import ai_assistant_bp  # noqa: E402
 # Register the Vambery AI Agent Blueprint
 current_app.register_blueprint(ai_assistant_bp)
 
+# Publish the agent to Superset's MCP server. Optional: a failure here must not
+# take the chat panel down with it.
+try:
+    from ai_assistant.mcp_tools import register as register_mcp_tools
+
+    register_mcp_tools()
+except Exception as ex:  # noqa: BLE001
+    logger.warning("Vambery AI Agent: MCP tools not registered: %s", ex)
+
 logger.info("Vambery AI Agent extension registered successfully (v%s)",
             __import__("ai_assistant").__version__)
 print("Vambery AI Agent extension registered")

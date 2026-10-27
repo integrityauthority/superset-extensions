@@ -1,0 +1,52 @@
+# Build each extension's .supx on a version tag and attach it to the release.
+#
+# Tag format: v<version>, e.g. v1.0.0. The version must match extension.json and
+# be plain X.Y.Z (Superset rejects "-rc1"); scripts/build_supx.py checks both.
+# To stage a release candidate, create the release as a prerelease first
+# (gh release create v1.0.0 --prerelease ...): this workflow then only attaches
+# the assets, and the release does not become the "latest" that deployments
+# fetch until it is promoted.
+
+name: Release .supx
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ai_assistant/frontend/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build ai_assistant
+        run: python scripts/build_supx.py ai_assistant --out out
+
+      - name: Check the tag matches the built version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ls out/*-"$tag".supx
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" out/* --clobber

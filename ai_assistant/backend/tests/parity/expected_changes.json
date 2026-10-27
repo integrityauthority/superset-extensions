@@ -13,5 +13,13 @@
   "update_dataset_metric": "new in 0.8",
   "query_dataset": "new in 0.8",
   "query_dataset_calc": "new in 0.8",
-  "query_dataset_bad_metric": "new in 0.8"
+  "query_dataset_bad_metric": "new in 0.8",
+  "list_dashboards": "new in 0.9",
+  "update_dashboard_add": "new in 0.9",
+  "update_dashboard_bad_column": "new in 0.9",
+  "update_dashboard_reorder": "new in 0.9",
+  "get_dashboard_after_add": "new in 0.9",
+  "update_dashboard_remove": "new in 0.9",
+  "get_dashboard_after_remove": "new in 0.9",
+  "get_foreign_chart": "the chart's description depends on which earlier run edited it"
 }
