@@ -32,7 +32,7 @@ from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from ai_assistant import __version__
 from ai_assistant.agent import run_agent, run_agent_stream
-from ai_assistant.config import get_ai_config, get_provider_config
+from ai_assistant.config import get_ai_config
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,6 @@ def _check_auth():
                 user_id = decoded.get("sub")
                 if user_id:
                     from superset.extensions import db
-                    from superset.connectors.sqla.models import SqlaTable  # noqa: F401
                     user_model = security_manager.user_model
                     found_user = db.session.get(user_model, user_id)  # SQLAlchemy 1.4+/2.0; Query.get is legacy
                     if found_user:
@@ -79,8 +78,20 @@ def _check_auth():
 
         return jsonify({"error": "Authentication required"}), 401
     except Exception as ex:
-        logger.warning("Could not check authentication: %s", ex)
-        return None  # fail-open if security_manager not available
+        # Fail closed: an error while checking must never let a request through.
+        logger.error("Could not check authentication: %s", ex)
+        return jsonify({"error": "Authentication check failed"}), 503
+
+
+def _check_database(database_id: int) -> tuple[Response, int] | None:
+    """Refuse a chat about a database the user cannot use in SQL Lab."""
+    from ai_assistant.access import AccessDenied, get_database
+
+    try:
+        get_database(int(database_id))
+    except (AccessDenied, ValueError, TypeError) as ex:
+        return jsonify({"error": str(ex)}), 403
+    return None
 
 
 @ai_assistant_bp.route("/chat", methods=["POST"])
@@ -127,6 +138,9 @@ def chat() -> tuple[Response, int] | Response:
     database_id = context.get("database_id")
     if not database_id:
         return jsonify({"error": "database_id is required in context"}), 400
+    denied = _check_database(database_id)
+    if denied:
+        return denied
 
     model_override = context.get("model_override")
     provider_override = context.get("provider_override")
@@ -179,6 +193,9 @@ def chat_stream() -> tuple[Response, int] | Response:
     database_id = context.get("database_id")
     if not database_id:
         return jsonify({"error": "database_id is required in context"}), 400
+    denied = _check_database(database_id)
+    if denied:
+        return denied
 
     model_override = context.get("model_override")
     provider_override = context.get("provider_override")

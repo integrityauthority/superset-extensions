@@ -20,8 +20,11 @@ Vambery AI Agent Database Tools.
 
 These tools allow the AI agent to introspect database schemas and execute
 SQL queries during its reasoning process.
-Uses Superset's Database model for all database operations, respecting
-security permissions and row-level security.
+
+Every tool acts as the requesting user, with the permissions that user has in
+SQL Lab and in Superset's UI (see access.py). SQL runs through
+``Database.execute``, so row-level security, SQL_QUERY_MUTATOR and the
+disallowed-function rules apply as well.
 """
 
 from __future__ import annotations
@@ -31,12 +34,57 @@ import re
 from datetime import datetime
 from typing import Any
 
+from superset_core.common import daos
+
 from superset.connectors.sqla.models import SqlaTable
 from superset.extensions import db
-from superset.models.core import Database
+from superset.models.slice import Slice
 from superset.sql.parse import Table
 
+from ai_assistant.access import (
+    AccessDenied,
+    audit,
+    check_editor,
+    check_sql_access,
+    check_table_access,
+    ensure_read_only,
+    filter_schemas,
+    find_visible,
+    filter_tables,
+    get_database,
+)
+
 logger = logging.getLogger(__name__)
+
+
+class QueryFailed(Exception):
+    """The database rejected the query; the message is the database error."""
+
+
+def _run_sql(
+    database: Any,
+    sql: str,
+    catalog: str | None,
+    schema_name: str | None,
+    limit: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Run one read-only statement as the current user and return rows.
+
+    ``Database.execute`` reports database errors in the result rather than
+    raising, so a failed query must be turned into an exception here — before
+    0.8 a wrong column name came back as an empty result.
+    """
+    from superset_core.queries.types import QueryOptions, QueryStatus
+
+    ensure_read_only(database, sql)
+    check_sql_access(database, sql, catalog, schema_name)
+    result = database.execute(
+        sql, QueryOptions(catalog=catalog, schema=schema_name, limit=limit)
+    )
+    if result.status != QueryStatus.SUCCESS:
+        raise QueryFailed(result.error_message or f"Query {result.status.value}")
+    rows, columns = _extract_result_data(result)
+    return rows[:limit], columns
 
 
 def _ai_resource_name(topic: str) -> str:
@@ -105,7 +153,8 @@ def _extract_result_data(result: Any) -> tuple[list[dict[str, Any]], list[str]]:
     Extract rows (as list of dicts) and column names from a QueryResult.
 
     The QueryResult from database.execute() stores results in
-    result.statements[i].data as a Pandas DataFrame.
+    result.statements[i].data: a Pandas DataFrame for a fresh query, but a
+    list of row dicts when the result is served from Superset's cache.
     """
     rows: list[dict[str, Any]] = []
     columns: list[str] = []
@@ -117,6 +166,10 @@ def _extract_result_data(result: Any) -> tuple[list[dict[str, Any]], list[str]]:
                 # Pandas DataFrame
                 rows = df.to_dict(orient="records")
                 columns = list(df.columns)
+            elif isinstance(df, list):
+                # Cached result: already a list of row dicts
+                rows = df
+                columns = list(df[0].keys()) if df and isinstance(df[0], dict) else []
             elif df is not None and hasattr(df, "keys"):
                 # dict-like
                 rows = [df] if not isinstance(df, list) else df
@@ -452,8 +505,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "description": (
                 "Update an existing Superset dataset. Can modify description, "
                 "column descriptions/verbose_names, SQL (for virtual datasets), "
-                "and metrics. ONLY use this when the user explicitly asks to edit "
-                "a dataset. All changes are logged."
+                "metrics and calculated columns. ONLY use this when the user explicitly "
+                "asks to edit a dataset. Changes are logged and kept in the dataset's "
+                "version history, so they can be reverted."
             ),
             "parameters": {
                 "type": "object",
@@ -487,6 +541,115 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                             "Column metadata updates. Only specified fields are changed. Optional."
                         ),
                     },
+                    "metrics": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "metric_name": {"type": "string"},
+                                "expression": {
+                                    "type": "string",
+                                    "description": "SQL aggregate, e.g. SUM(amount)",
+                                },
+                                "verbose_name": {"type": "string"},
+                                "description": {"type": "string"},
+                                "d3format": {"type": "string"},
+                            },
+                            "required": ["metric_name"],
+                        },
+                        "description": (
+                            "Add metrics, or update an existing metric by metric_name. "
+                            "A new metric needs an expression. Optional."
+                        ),
+                    },
+                    "calculated_columns": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column_name": {"type": "string"},
+                                "expression": {
+                                    "type": "string",
+                                    "description": "Row-level SQL expression",
+                                },
+                                "verbose_name": {"type": "string"},
+                                "description": {"type": "string"},
+                                "type": {"type": "string"},
+                                "is_dttm": {"type": "boolean"},
+                            },
+                            "required": ["column_name", "expression"],
+                        },
+                        "description": (
+                            "Add calculated columns, or update an existing calculated "
+                            "column by column_name. Optional."
+                        ),
+                    },
+                },
+                "required": ["dataset_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_dataset",
+            "description": (
+                "Query a Superset dataset by the names of its metrics and columns, "
+                "the way a chart does. Prefer this over execute_sql when a dataset "
+                "already defines the metric you need: the dataset's own metric "
+                "definitions, row-level security, caching and row limits all apply. "
+                "Use get_dataset first to see the metric and column names."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset_id": {"type": "integer"},
+                    "metrics": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Metric names defined on the dataset",
+                    },
+                    "dimensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Column names to group by",
+                    },
+                    "filters": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "col": {"type": "string"},
+                                "op": {
+                                    "type": "string",
+                                    "description": "==, !=, >, <, >=, <=, IN, NOT IN, LIKE, IS NULL, IS NOT NULL",
+                                },
+                                "val": {},
+                            },
+                            "required": ["col", "op"],
+                        },
+                    },
+                    "time_range": {
+                        "type": "string",
+                        "description": "e.g. 'Last year', '2024-01-01 : 2024-12-31'",
+                    },
+                    "time_column": {"type": "string"},
+                    "time_grain": {
+                        "type": "string",
+                        "description": "ISO duration, e.g. P1D, P1W, P1M, P1Y",
+                    },
+                    "order": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column": {"type": "string"},
+                                "descending": {"type": "boolean"},
+                            },
+                            "required": ["column"],
+                        },
+                    },
+                    "limit": {"type": "integer", "description": "Default 100"},
                 },
                 "required": ["dataset_id"],
             },
@@ -1223,20 +1386,15 @@ def _search_entity_candidates(
 # --------------------------------------------------------------------------
 
 
-def _get_database(database_id: int) -> Database:
-    """Load a Database model by ID, raising ValueError if not found."""
-    database = db.session.query(Database).filter_by(id=database_id).first()
-    if not database:
-        raise ValueError(f"Database with id={database_id} not found")
-    return database
+_get_database = get_database
 
 
 def tool_list_schemas(database_id: int, catalog: str | None = None) -> dict[str, Any]:
-    """List all schemas in the database."""
+    """List the schemas in the database that the user may access."""
     try:
         database = _get_database(database_id)
         schemas = database.get_all_schema_names(catalog=catalog)
-        return {"schemas": sorted(schemas)}
+        return {"schemas": sorted(filter_schemas(database, catalog, schemas))}
     except Exception as ex:
         logger.error("Error listing schemas for db %s: %s", database_id, ex)
         return {"error": str(ex)}
@@ -1245,14 +1403,15 @@ def tool_list_schemas(database_id: int, catalog: str | None = None) -> dict[str,
 def tool_list_tables(
     database_id: int, schema_name: str, catalog: str | None = None
 ) -> dict[str, Any]:
-    """List all tables in a specific schema."""
+    """List the tables in a schema that the user may access."""
     try:
         database = _get_database(database_id)
         tables = database.get_all_table_names_in_schema(
             catalog=catalog, schema=schema_name
         )
         # tables is a set of (table_name, schema, catalog) tuples
-        table_names = sorted(t[0] for t in tables)
+        visible = filter_tables(database, catalog, schema_name, tables)
+        table_names = sorted(t[0] for t in visible)
         return {"tables": table_names, "schema": schema_name}
     except Exception as ex:
         logger.error(
@@ -1267,14 +1426,15 @@ def tool_list_tables(
 def tool_list_views(
     database_id: int, schema_name: str, catalog: str | None = None
 ) -> dict[str, Any]:
-    """List all views in a specific schema."""
+    """List the views in a schema that the user may access."""
     try:
         database = _get_database(database_id)
         views = database.get_all_view_names_in_schema(
             catalog=catalog, schema=schema_name
         )
         # views is a set of (view_name, schema, catalog) tuples
-        view_names = sorted(v[0] for v in views)
+        visible = filter_tables(database, catalog, schema_name, views)
+        view_names = sorted(v[0] for v in visible)
         return {"views": view_names, "schema": schema_name}
     except Exception as ex:
         logger.error(
@@ -1296,6 +1456,7 @@ def tool_get_table_columns(
     try:
         database = _get_database(database_id)
         table = Table(table=table_name, schema=schema_name, catalog=catalog)
+        check_table_access(database, table)
         columns = database.get_columns(table)
 
         # Get table comment from the database engine
@@ -1374,6 +1535,9 @@ def tool_sample_table_data(
     """Get sample data from a table."""
     try:
         database = _get_database(database_id)
+        check_table_access(
+            database, Table(table=table_name, schema=schema_name, catalog=catalog)
+        )
         # Use TOP for MSSQL, LIMIT for others
         db_engine = database.db_engine_spec.__name__ if database.db_engine_spec else ""
         if "mssql" in db_engine.lower() or "MSSql" in db_engine:
@@ -1381,16 +1545,7 @@ def tool_sample_table_data(
         else:
             sql = f'SELECT * FROM "{schema_name}"."{table_name}" LIMIT {max_rows}'
 
-        from superset_core.queries.types import QueryOptions
-
-        options = QueryOptions(
-            catalog=catalog,
-            schema=schema_name,
-            limit=max_rows,
-        )
-        result = database.execute(sql, options)
-        rows, _ = _extract_result_data(result)
-        rows = rows[:max_rows]
+        rows, _ = _run_sql(database, sql, catalog, schema_name, max_rows)
 
         return {
             "table": table_name,
@@ -1420,6 +1575,9 @@ def tool_get_distinct_values(
     """Get distinct values for a specific column."""
     try:
         database = _get_database(database_id)
+        check_table_access(
+            database, Table(table=table_name, schema=schema_name, catalog=catalog)
+        )
         db_engine = database.db_engine_spec.__name__ if database.db_engine_spec else ""
         if "mssql" in db_engine.lower() or "MSSql" in db_engine:
             sql = (
@@ -1436,16 +1594,7 @@ def tool_get_distinct_values(
                 f'ORDER BY "{column_name}" LIMIT {max_values}'
             )
 
-        from superset_core.queries.types import QueryOptions
-
-        options = QueryOptions(
-            catalog=catalog,
-            schema=schema_name,
-            limit=max_values,
-        )
-        result = database.execute(sql, options)
-
-        rows, _ = _extract_result_data(result)
+        rows, _ = _run_sql(database, sql, catalog, schema_name, max_values)
         values = []
         for row in rows[:max_values]:
             val = list(row.values())[0] if isinstance(row, dict) else row
@@ -1469,29 +1618,17 @@ def tool_get_distinct_values(
         return {"error": str(ex)}
 
 
-def _validate_sql_syntax(sql: str, dialect: str | None = None) -> str | None:
-    """
-    Validate SQL syntax using sqlglot. Returns error message if invalid,
-    None if valid. This catches obvious syntax errors before hitting the DB.
-    """
-    try:
-        import sqlglot
+def _validation_sql(database: Any, sql: str) -> str:
+    """Wrap a SELECT so that validating it fetches at most one row."""
+    db_backend = database.backend.lower() if database.backend else ""
+    if "mssql" in db_backend:
+        return f"SELECT TOP 1 * FROM ({sql}) AS _validation_check"
+    return f"SELECT * FROM ({sql}) AS _validation_check LIMIT 1"
 
-        sqlglot_dialect = None
-        if dialect and "mssql" in dialect.lower():
-            sqlglot_dialect = "tsql"
-        elif dialect and "postgres" in dialect.lower():
-            sqlglot_dialect = "postgres"
-        elif dialect and "mysql" in dialect.lower():
-            sqlglot_dialect = "mysql"
 
-        sqlglot.transpile(sql, read=sqlglot_dialect)
-        return None
-    except sqlglot.errors.ParseError as e:
-        return f"SQL syntax error: {str(e)}"
-    except Exception:
-        # If sqlglot itself fails, don't block — let the DB handle it
-        return None
+def _is_select(sql: str) -> bool:
+    head = sql.strip().upper()
+    return head.startswith("SELECT") or head.startswith("WITH")
 
 
 def tool_set_editor_sql(
@@ -1505,41 +1642,22 @@ def tool_set_editor_sql(
     action so it gets placed in the editor.  If the SQL fails, return the
     error to the LLM so it can fix the query before trying again.
     """
-    sql_stripped = sql.strip().upper()
-
-    # Reject DDL statements — only SELECT queries are allowed
-    ddl_keywords = ("CREATE", "ALTER", "DROP", "INSERT", "UPDATE", "DELETE", "EXEC", "TRUNCATE")
-    if any(sql_stripped.startswith(kw) for kw in ddl_keywords):
-        logger.warning(
-            "set_editor_sql REJECTED DDL statement: %s", sql[:200],
-        )
+    try:
+        database = _get_database(database_id)
+        ensure_read_only(database, sql)
+        check_sql_access(database, sql, catalog, schema_name)
+    except (AccessDenied, ValueError) as ex:
+        logger.warning("set_editor_sql REJECTED: %s — %s", ex, sql[:200])
         return {
             "error": (
-                "DDL statements (CREATE, ALTER, DROP, etc.) are NOT allowed. "
-                "Only SELECT queries can be placed in the editor. "
-                "Rewrite your query as a SELECT statement."
+                f"{ex}. Only a single read-only query can be placed in the editor. "
+                "Rewrite it as one SELECT statement."
             ),
         }
 
-    is_select = sql_stripped.startswith("SELECT") or sql_stripped.startswith("WITH")
-
-    if is_select:
-        # Wrap in a validation query that returns at most 1 row
-        database = _get_database(database_id)
-        db_backend = database.backend.lower() if database.backend else ""
-        if "mssql" in db_backend:
-            validation_sql = f"SELECT TOP 1 * FROM ({sql}) AS _validation_check"
-        else:
-            validation_sql = f"SELECT * FROM ({sql}) AS _validation_check LIMIT 1"
-
+    if _is_select(sql):
         try:
-            from superset_core.queries.types import QueryOptions
-            options = QueryOptions(
-                catalog=catalog,
-                schema=schema_name,
-                limit=1,
-            )
-            database.execute(validation_sql, options)
+            _run_sql(database, _validation_sql(database, sql), catalog, schema_name, 1)
             logger.info("set_editor_sql validation passed for SQL (%d chars)", len(sql))
         except Exception as ex:
             logger.warning(
@@ -1554,7 +1672,7 @@ def tool_set_editor_sql(
                 "sql": sql,
             }
 
-    # Validation passed (or non-SELECT) — send to frontend
+    # Validation passed (or a read-only non-SELECT such as SHOW) — send to frontend
     return {"action": "set_editor_sql", "sql": sql}
 
 
@@ -1565,35 +1683,10 @@ def tool_execute_sql(
     catalog: str | None = None,
     max_rows: int = 50,
 ) -> dict[str, Any]:
-    """Execute an arbitrary SQL query."""
+    """Execute one read-only SQL statement as the current user."""
     try:
-        # Basic safety check - only allow SELECT
-        sql_stripped = sql.strip().upper()
-        if not sql_stripped.startswith("SELECT") and not sql_stripped.startswith(
-            "WITH"
-        ):
-            return {
-                "error": "Only SELECT and WITH (CTE) queries are allowed for safety"
-            }
-
-        # Validate SQL syntax before executing
         database = _get_database(database_id)
-        dialect = database.backend if database else None
-        syntax_error = _validate_sql_syntax(sql, dialect)
-        if syntax_error:
-            return {"error": syntax_error, "sql": sql}
-
-        from superset_core.queries.types import QueryOptions
-
-        options = QueryOptions(
-            catalog=catalog,
-            schema=schema_name,
-            limit=max_rows,
-        )
-        result = database.execute(sql, options)
-        rows, columns = _extract_result_data(result)
-        rows = rows[:max_rows]
-
+        rows, columns = _run_sql(database, sql, catalog, schema_name, max_rows)
         return {
             "columns": columns,
             "row_count": len(rows),
@@ -1614,7 +1707,7 @@ def tool_list_datasets(
     database_id: int,
     search: str | None = None,
 ) -> dict[str, Any]:
-    """List Superset datasets, optionally filtered by search term."""
+    """List the datasets the user can see, optionally filtered by search term."""
     try:
         query = db.session.query(SqlaTable).filter(
             SqlaTable.database_id == database_id,
@@ -1624,7 +1717,8 @@ def tool_list_datasets(
                 SqlaTable.table_name.ilike(f"%{search}%")
             )
         query = query.order_by(SqlaTable.table_name)
-        datasets = query.limit(100).all()
+        # The DAO adds Superset's dataset access filter; it cannot follow a LIMIT.
+        datasets = daos.DatasetDAO.query(query)[:100]
 
         results = []
         for ds in datasets:
@@ -1646,7 +1740,7 @@ def tool_list_datasets(
 def tool_get_dataset(dataset_id: int) -> dict[str, Any]:
     """Get full details of a Superset dataset by ID."""
     try:
-        dataset = db.session.query(SqlaTable).filter_by(id=dataset_id).first()
+        dataset = find_visible(daos.DatasetDAO, SqlaTable, dataset_id)
         if not dataset:
             return {"error": f"Dataset with id={dataset_id} not found"}
 
@@ -1708,12 +1802,20 @@ def tool_update_dataset(
     description: str | None = None,
     sql: str | None = None,
     columns: list[dict[str, Any]] | None = None,
+    metrics: list[dict[str, Any]] | None = None,
+    calculated_columns: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Update an existing Superset dataset. Logs all changes."""
+    """Update an existing Superset dataset. Logs all changes.
+
+    Superset 7.0 keeps a version history of datasets, so every change made
+    here can be reviewed and reverted from the dataset's history.
+    """
     try:
-        dataset = db.session.query(SqlaTable).filter_by(id=dataset_id).first()
+        dataset = find_visible(daos.DatasetDAO, SqlaTable, dataset_id)
         if not dataset:
             return {"error": f"Dataset with id={dataset_id} not found"}
+        check_editor(dataset, f"dataset '{dataset.table_name}'")
+        audit("update_dataset", dataset_id=dataset_id)
 
         changes: list[str] = []
 
@@ -1727,6 +1829,8 @@ def tool_update_dataset(
         if sql is not None:
             if not dataset.sql:
                 return {"error": "Cannot set SQL on a physical dataset — only virtual datasets have SQL"}
+            ensure_read_only(dataset.database, sql)
+            check_sql_access(dataset.database, sql, dataset.catalog, dataset.schema)
             old_sql = dataset.sql
             dataset.sql = sql
             changes.append(f"sql updated (was {len(old_sql or '')} chars, now {len(sql)} chars)")
@@ -1747,6 +1851,11 @@ def tool_update_dataset(
                     col_obj.description = col_update["description"]
                     changes.append(f"column '{col_name}' description updated")
 
+        if metrics:
+            changes.extend(_upsert_metrics(dataset, metrics))
+        if calculated_columns:
+            changes.extend(_upsert_calculated_columns(dataset, calculated_columns))
+
         if not changes:
             return {"message": "No changes specified", "dataset_id": dataset_id}
 
@@ -1766,6 +1875,146 @@ def tool_update_dataset(
         db.session.rollback()
         logger.error("Error updating dataset %s: %s", dataset_id, ex, exc_info=True)
         return {"error": f"Failed to update dataset: {str(ex)}"}
+
+
+_METRIC_FIELDS = ("expression", "verbose_name", "description", "d3format")
+_CALC_COLUMN_FIELDS = ("expression", "verbose_name", "description", "type", "is_dttm")
+
+
+def _upsert_metrics(dataset: Any, metrics: list[dict[str, Any]]) -> list[str]:
+    """Add metrics, or update those whose metric_name already exists."""
+    from superset.connectors.sqla.models import SqlMetric
+
+    changes: list[str] = []
+    existing = {m.metric_name: m for m in dataset.metrics}
+    for spec in metrics:
+        name = spec.get("metric_name")
+        if not name:
+            changes.append("metric without metric_name skipped")
+            continue
+        metric = existing.get(name)
+        if metric is None:
+            if not spec.get("expression"):
+                changes.append(f"metric '{name}' needs an expression, skipped")
+                continue
+            metric = SqlMetric(metric_name=name, table=dataset)
+            dataset.metrics.append(metric)
+            changes.append(f"metric '{name}' added: {spec['expression']}")
+        else:
+            changes.append(f"metric '{name}' updated")
+        for field in _METRIC_FIELDS:
+            if field in spec:
+                setattr(metric, field, spec[field])
+    return changes
+
+
+def _upsert_calculated_columns(
+    dataset: Any, columns: list[dict[str, Any]]
+) -> list[str]:
+    """Add calculated columns, or update existing ones by column_name.
+
+    Physical columns are left alone here: their metadata goes through the
+    `columns` argument, and their definition belongs to the database.
+    """
+    from superset.connectors.sqla.models import TableColumn
+
+    changes: list[str] = []
+    existing = {c.column_name: c for c in dataset.columns}
+    for spec in columns:
+        name = spec.get("column_name")
+        if not name or not spec.get("expression"):
+            changes.append("calculated column needs column_name and expression, skipped")
+            continue
+        column = existing.get(name)
+        if column is not None and not column.expression:
+            changes.append(f"'{name}' is a physical column, skipped")
+            continue
+        if column is None:
+            column = TableColumn(column_name=name, table=dataset)
+            dataset.columns.append(column)
+            changes.append(f"calculated column '{name}' added: {spec['expression']}")
+        else:
+            changes.append(f"calculated column '{name}' updated")
+        for field in _CALC_COLUMN_FIELDS:
+            if field in spec:
+                setattr(column, field, spec[field])
+    return changes
+
+
+def tool_query_dataset(
+    dataset_id: int,
+    metrics: list[str] | None = None,
+    dimensions: list[str] | None = None,
+    filters: list[dict[str, Any]] | None = None,
+    time_range: str | None = None,
+    time_column: str | None = None,
+    time_grain: str | None = None,
+    order: list[dict[str, Any]] | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Query a dataset by metric and column names (Superset 7.0 tabular query).
+
+    Mirrors ``POST /api/v1/datasource/table/<id>/query``: the same resolver,
+    name validation and execution path, so permissions, row-level security,
+    caching and row limits apply exactly as for that endpoint.
+    """
+    from superset.common.tabular_query import (
+        build_query_dict,
+        execute_tabular_query,
+        resolve_explorable,
+        validate_query_names,
+    )
+
+    try:
+        if find_visible(daos.DatasetDAO, SqlaTable, dataset_id) is None:
+            return {"error": f"Dataset with id={dataset_id} not found"}
+        metrics, dimensions = metrics or [], dimensions or []
+        filters, order = filters or [], order or []
+        if not metrics and not dimensions:
+            return {"error": "Give at least one metric or dimension"}
+        resolved = resolve_explorable(
+            "table",
+            dataset_id,
+            time_column=time_column,
+            has_time_range=bool(time_range),
+        )
+        if errors := validate_query_names(
+            resolved.valid_metrics,
+            resolved.valid_dimensions,
+            metrics=metrics,
+            dimensions=dimensions,
+            filters=filters,
+            order_names=[term["column"] for term in order],
+            metrics_full_list_hint="get_dataset",
+        ):
+            return {"error": "; ".join(errors)}
+        grain_column = resolved.resolve_grain_column(time_column, dimensions)
+        query_dict = build_query_dict(
+            time_column=resolved.time_column,
+            metrics=metrics,
+            dimensions=dimensions,
+            filters=filters,
+            time_range=time_range,
+            time_grain=time_grain,
+            grain_column=grain_column,
+            rewrite_one_sided_time_range=False,
+            limit=min(int(limit or 100), 1000),
+            offset=0,
+            order=[(t["column"], bool(t.get("descending", True))) for t in order],
+            order_desc=bool(order[0].get("descending", True)) if order else True,
+        )
+        result = execute_tabular_query(dataset_id, "table", query_dict)
+        queries = result.get("queries") or []
+        data = queries[0].get("data", []) if queries else []
+        return {
+            "columns": list(data[0].keys()) if data else [],
+            "row_count": len(data),
+            "data": data[:200],
+            "sql": queries[0].get("query") if queries else None,
+        }
+    except Exception as ex:
+        logger.error("Error querying dataset %s: %s", dataset_id, ex)
+        return {"error": str(getattr(ex, "message", None) or ex)}
 
 
 # --------------------------------------------------------------------------
@@ -1792,7 +2041,8 @@ def tool_list_charts(
             )
 
         query = query.order_by(Slice.changed_on.desc())
-        charts = query.limit(50).all()
+        # The DAO adds Superset's chart access filter; it cannot follow a LIMIT.
+        charts = daos.ChartDAO.query(query)[:50]
 
         results = []
         for chart in charts:
@@ -1817,9 +2067,8 @@ def tool_get_chart(chart_id: int) -> dict[str, Any]:
     """Get full details of a Superset chart by ID."""
     try:
         import json as stdlib_json
-        from superset.models.slice import Slice
 
-        chart = db.session.query(Slice).filter_by(id=chart_id).first()
+        chart = find_visible(daos.ChartDAO, Slice, chart_id)
         if not chart:
             return {"error": f"Chart with id={chart_id} not found"}
 
@@ -1864,11 +2113,12 @@ def tool_update_chart(
     """Update an existing Superset chart. Logs all changes."""
     try:
         import json as stdlib_json
-        from superset.models.slice import Slice
 
-        chart = db.session.query(Slice).filter_by(id=chart_id).first()
+        chart = find_visible(daos.ChartDAO, Slice, chart_id)
         if not chart:
             return {"error": f"Chart with id={chart_id} not found"}
+        check_editor(chart, f"chart '{chart.slice_name}'")
+        audit("update_chart", chart_id=chart_id)
 
         changes: list[str] = []
 
@@ -1900,6 +2150,8 @@ def tool_update_chart(
             changes.append(f"params updated ({len(params)} keys changed)")
 
         if datasource_id is not None:
+            if find_visible(daos.DatasetDAO, SqlaTable, datasource_id) is None:
+                return {"error": f"Dataset with id={datasource_id} not found"}
             old_ds = chart.datasource_id
             chart.datasource_id = datasource_id
             chart.datasource_type = "table"
@@ -1907,6 +2159,11 @@ def tool_update_chart(
 
         if not changes:
             return {"message": "No changes specified", "chart_id": chart_id}
+
+        # A saved query context would still describe the old chart. Superset
+        # rebuilds a missing one the next time the chart opens in Explore.
+        if params is not None or viz_type is not None or datasource_id is not None:
+            chart.query_context = None
 
         db.session.commit()
         logger.info(
@@ -2091,15 +2348,8 @@ def _validate_chart_sql(
     """
     try:
         database = _get_database(database_id)
-        db_backend = database.backend.lower() if database.backend else ""
-        if "mssql" in db_backend:
-            validation_sql = f"SELECT TOP 1 * FROM ({sql}) AS _val"
-        else:
-            validation_sql = f"SELECT * FROM ({sql}) AS _val LIMIT 1"
-
-        from superset_core.queries.types import QueryOptions
-        options = QueryOptions(catalog=catalog, schema=schema_name, limit=1)
-        database.execute(validation_sql, options)
+        ensure_read_only(database, sql)
+        _run_sql(database, _validation_sql(database, sql), catalog, schema_name, 1)
         return None  # success
     except Exception as ex:
         error_msg = str(ex)
@@ -2286,9 +2536,8 @@ def tool_create_dashboard(
         # pointing at source ids and appends duplicate components).
         chart_uuids: dict[int, str] = {}
         try:
-            from superset.models.slice import Slice
             for cid in chart_ids:
-                s = db.session.query(Slice).filter_by(id=cid).first()
+                s = find_visible(daos.ChartDAO, Slice, cid)
                 if s:
                     chart_names[cid] = s.slice_name
                     chart_uuids[cid] = str(s.uuid)
@@ -2343,10 +2592,9 @@ def tool_create_dashboard(
         # Associate charts (slices) with the dashboard via the
         # many-to-many relationship — position_json alone isn't enough
         try:
-            from superset.models.slice import Slice
             slices = []
             for cid in chart_ids:
-                s = db.session.query(Slice).filter_by(id=cid).first()
+                s = find_visible(daos.ChartDAO, Slice, cid)
                 if s:
                     slices.append(s)
                 else:
@@ -2412,6 +2660,28 @@ def execute_tool(
         # These actions are relayed to the frontend
         return {"action": tool_name, **arguments}
 
+    audit(
+        tool_name,
+        database_id=database_id,
+        schema=schema_name,
+        sql=(arguments.get("sql") or "")[:2000] or None,
+    )
+    try:
+        return _dispatch(
+            tool_name, arguments, database_id, schema_name, catalog, max_sample_rows
+        )
+    except AccessDenied as ex:
+        return {"error": f"Permission denied: {ex}"}
+
+
+def _dispatch(
+    tool_name: str,
+    arguments: dict[str, Any],
+    database_id: int,
+    schema_name: str | None,
+    catalog: str | None,
+    max_sample_rows: int,
+) -> dict[str, Any]:
     if tool_name == "list_schemas":
         return tool_list_schemas(database_id, catalog=catalog)
 
@@ -2504,6 +2774,21 @@ def execute_tool(
             description=arguments.get("description"),
             sql=arguments.get("sql"),
             columns=arguments.get("columns"),
+            metrics=arguments.get("metrics"),
+            calculated_columns=arguments.get("calculated_columns"),
+        )
+
+    if tool_name == "query_dataset":
+        return tool_query_dataset(
+            dataset_id=arguments["dataset_id"],
+            metrics=arguments.get("metrics"),
+            dimensions=arguments.get("dimensions"),
+            filters=arguments.get("filters"),
+            time_range=arguments.get("time_range"),
+            time_column=arguments.get("time_column"),
+            time_grain=arguments.get("time_grain"),
+            order=arguments.get("order"),
+            limit=arguments.get("limit", 100),
         )
 
     # Chart management tools

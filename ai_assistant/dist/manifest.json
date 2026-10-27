@@ -2,8 +2,8 @@
   "id": "integrityauthority.vambery-ai-assistant",
   "publisher": "integrityauthority",
   "name": "vambery-ai-assistant",
-  "version": "0.7.0",
   "displayName": "Vambery AI Agent",
+  "version": "0.8.0",
   "license": "Apache-2.0",
   "permissions": [
     "can_read"
@@ -16,16 +16,6 @@
         "name": "Vambery AI Agent",
         "description": "AI-powered SQL assistant \u2014 explores schemas, writes and runs queries, and builds charts."
       },
-      "views": {
-        "sqllab": {
-          "rightSidebar": [
-            {
-              "id": "vambery_ai_assistant.chatPanel",
-              "name": "Vambery AI Agent"
-            }
-          ]
-        }
-      },
       "menus": {}
     },
     "moduleFederation": {
@@ -34,7 +24,7 @@
         "./index"
       ]
     },
-    "remoteEntry": "remoteEntry.593804b041ac278f4e30.js",
+    "remoteEntry": "remoteEntry.559e1978b562137ebad3.js",
     "moduleFederationName": "vambery_ai_assistant"
   },
   "backend": {

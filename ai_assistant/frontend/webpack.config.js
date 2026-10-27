@@ -59,12 +59,12 @@ module.exports = (env, argv) => {
           // Consumed from the host's share scope, as the 7.0 extension template
           // does: that instance carries this extension's getContext(). Hosts
           // that share nothing (6.1) get the window.superset fallback instead.
+          // Superset 7.0 hands each extension its own instance through the
+          // share scope; `getContext()` (Storage API) only works on that one.
           "@apache-superset/core": {
             singleton: true,
             requiredVersion: false,
-            version: "0.0.0",
-            shareKey: "@apache-superset/core",
-            import: path.resolve(__dirname, "src/supersetCoreFallback.js"),
+            import: false,
           },
         },
       }),

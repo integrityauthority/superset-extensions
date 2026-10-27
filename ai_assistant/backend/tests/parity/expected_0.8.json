@@ -1,0 +1,17 @@
+{
+  "execute_sql": "0.7 read a cached result (list of rows) as empty; fixed in 0.8",
+  "execute_sql_cached": "0.7 read a cached result (list of rows) as empty; fixed in 0.8",
+  "execute_sql_cte": "0.7 read a cached result (list of rows) as empty; fixed in 0.8",
+  "get_distinct_values": "0.7 read a cached result (list of rows) as empty; fixed in 0.8",
+  "sample_table_data": "0.7 read a cached result (list of rows) as empty; fixed in 0.8",
+  "execute_sql_bad_column": "0.7 reported a failed query as an empty result; 0.8 returns the database error",
+  "set_editor_sql_bad": "0.7 validation passed failed queries into the editor; 0.8 rejects them with the database error",
+  "execute_sql_delete": "parsed read-only guard; same refusal, new wording",
+  "execute_sql_stacked": "0.7 prefix check let a stacked DELETE through to the database; 0.8 refuses more than one statement",
+  "set_editor_sql_ddl": "parsed read-only guard; same refusal, new wording",
+  "update_foreign_chart": "0.7 let a user edit a chart they are not an editor of; 0.8 refuses",
+  "update_dataset_metric": "new in 0.8",
+  "query_dataset": "new in 0.8",
+  "query_dataset_calc": "new in 0.8",
+  "query_dataset_bad_metric": "new in 0.8"
+}

@@ -18,45 +18,29 @@
  */
 
 /**
- * Host capability detection.
+ * Thin wrappers over the host APIs the panel reads on every render.
  *
- * The extension targets several Superset versions at once:
- *
- *   6.1  — only `views` (SQL Lab right sidebar). No chat, navigation or storage.
- *   6.2  — adds `core.chat` + `navigation`, so the panel can mount on any page.
- *   7.0  — additionally adds the extensions Storage API.
- *
- * Everything here feature-detects at runtime and degrades rather than throwing,
- * so one build runs on all three.
+ * Superset 7.0+ is the minimum host, so `chat`, `navigation` and `sqlLab`
+ * always exist. The wrappers only absorb errors thrown while the host tears
+ * a page down, and turn event subscriptions into plain unsubscribe functions
+ * for React effects.
  */
 
 import * as core from "@apache-superset/core";
 
 type Page = core.navigation.Page;
 
-/** Whether the host exposes the SIP-214 chat contribution (6.2+). */
-export function isChatApiAvailable(): boolean {
-  try {
-    return typeof (core as { chat?: { registerChat?: unknown } }).chat
-      ?.registerChat === "function";
-  } catch {
-    return false;
-  }
+function toUnsubscribe(disposable: core.common.Disposable): () => void {
+  return () => {
+    try {
+      disposable.dispose();
+    } catch {
+      /* host already torn down */
+    }
+  };
 }
 
-/** Whether the host exposes the navigation namespace (6.2+). */
-export function isNavigationApiAvailable(): boolean {
-  try {
-    return typeof (core as { navigation?: { getPage?: unknown } }).navigation
-      ?.getPage === "function";
-  } catch {
-    return false;
-  }
-}
-
-/** Current page, or null when the host predates the navigation API. */
 export function getCurrentPage(): Page | null {
-  if (!isNavigationApiAvailable()) return null;
   try {
     return core.navigation.getPage();
   } catch {
@@ -64,81 +48,26 @@ export function getCurrentPage(): Page | null {
   }
 }
 
-/**
- * Whether we are on a page where the SQL Lab APIs are usable.
- *
- * On 6.2+ the sqlLab namespace is wrapped in a page-scoped Proxy that THROWS
- * when touched from the wrong page, so this must be checked before any
- * sqlLab.* call once the panel can mount globally.
- *
- * On hosts without the navigation API we are only ever mounted in the SQL Lab
- * sidebar, so SQL Lab is implied.
- */
+/** The agent works on a SQL Lab tab's database; other pages get a notice. */
 export function isSqlLabContext(): boolean {
-  const page = getCurrentPage();
-  if (page === null) return true;
-  return page === "sqllab";
+  return getCurrentPage() === "sqllab";
 }
 
-/**
- * Subscribe to page changes. Returns an unsubscribe function; a no-op on hosts
- * without the navigation API.
- */
 export function onPageChange(listener: (page: Page) => void): () => void {
-  if (!isNavigationApiAvailable()) return () => undefined;
-  try {
-    const disposable = core.navigation.onDidChangePage(listener);
-    return () => {
-      try {
-        disposable.dispose();
-      } catch {
-        /* host already torn down */
-      }
-    };
-  } catch {
-    return () => undefined;
-  }
+  return toUnsubscribe(core.navigation.onDidChangePage(listener));
 }
 
-/**
- * Current chat display mode, or null when the panel is not mounted through
- * core.chat (6.1 sidebar).
- */
-export function getDisplayMode(): core.chat.DisplayMode | null {
-  if (!isChatApiAvailable()) return null;
-  try {
-    return core.chat.getDisplayMode();
-  } catch {
-    return null;
-  }
+export function getDisplayMode(): core.chat.DisplayMode {
+  return core.chat.getDisplayMode();
 }
 
-/**
- * Subscribe to display mode changes (the user can switch from host controls).
- * Returns an unsubscribe function; a no-op without core.chat.
- */
 export function onDisplayModeChange(
   listener: (mode: core.chat.DisplayMode) => void,
 ): () => void {
-  if (!isChatApiAvailable()) return () => undefined;
-  try {
-    const disposable = core.chat.onDidChangeDisplayMode(listener);
-    return () => {
-      try {
-        disposable.dispose();
-      } catch {
-        /* host already torn down */
-      }
-    };
-  } catch {
-    return () => undefined;
-  }
+  return toUnsubscribe(core.chat.onDidChangeDisplayMode(listener));
 }
 
-/**
- * Read the current SQL Lab tab, or null when unavailable — either because we
- * are on another page or because the host threw.
- */
+/** The active SQL Lab tab, or null outside SQL Lab. */
 export function safeGetCurrentTab(): core.sqlLab.Tab | null {
   if (!isSqlLabContext()) return null;
   try {
