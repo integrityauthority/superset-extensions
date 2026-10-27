@@ -874,8 +874,10 @@ def _run_step_tools(
                 # Keep a compact snippet for the checker. Include the SQL that
                 # actually ran — the executor often rewrites the planned query —
                 # so the checker can judge aggregate semantics, not just row counts.
-                # Progress and questions carry no data; keep the last real result.
-                if tool_name not in ("update_todo", "ask_user"):
+                # Progress, questions and editor placement without a preview
+                # carry no data; keep the last real result instead.
+                is_receipt = tool_name in ("set_editor_sql", "open_sql_tab") and "preview" not in tool_result
+                if tool_name not in ("update_todo", "ask_user") and not is_receipt:
                     snippet = json.dumps(tool_result, default=str)[:500]
                     executed_sql = tool_args.get("sql")
                     if isinstance(executed_sql, str) and executed_sql.strip():
@@ -1469,6 +1471,17 @@ def _run_planner_stream(
     summary_parts = [f"Original question: {user_question}\n\nExecution results:"]
     for sid, summary in plan.context.step_results.items():
         summary_parts.append(f"- Step {sid}: {summary}")
+    # Steps that did not finish still ran queries; their last result may be
+    # exactly the answer, so the summary must see it, marked as such.
+    for s in plan.steps:
+        if str(s.step_id) in plan.context.step_results:
+            continue
+        record = f"- Step {s.step_id} ({s.status}): {s.description}"
+        if s.context_snippet:
+            record += f"\n  Last query and result: {s.context_snippet}"
+        if getattr(s, "_editor_sql", None):
+            record += f"\n  SQL placed in the editor: {s._editor_sql[:1500]}"  # type: ignore[attr-defined]
+        summary_parts.append(record)
 
     # Mark all todos done
     for s in plan.steps:

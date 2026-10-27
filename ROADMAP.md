@@ -105,7 +105,7 @@ Once 1.0 is final, announce it in the
   differences. Each intended change is listed with its reason in
   `expected_changes.json`.
 - **Agent evaluation** (`backend/tests/agent_eval`): real questions through the whole
-  agent on synthetic data, checked against known answers. 5/5 with
+  agent on synthetic data, checked against known answers: 15/15 over three runs with
   `gpt-6-luna` (Azure).
 
 **0.8 — 7.0-only foundation, permissions, no lost functionality** — done

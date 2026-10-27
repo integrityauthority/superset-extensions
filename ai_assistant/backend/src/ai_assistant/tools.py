@@ -1680,6 +1680,9 @@ def _validation_sql(database: Any, sql: str) -> str:
     return f"SELECT * FROM ({sql}) AS _validation_check LIMIT 1"
 
 
+PREVIEW_ROWS = 20
+
+
 def _is_select(sql: str) -> bool:
     head = sql.strip().upper()
     return head.startswith("SELECT") or head.startswith("WITH")
@@ -1709,9 +1712,14 @@ def tool_set_editor_sql(
             ),
         }
 
+    preview: dict[str, Any] | None = None
     if _is_select(sql):
         try:
-            _run_sql(database, _validation_sql(database, sql), catalog, schema_name, 1)
+            # Superset applies the row limit itself (TOP / LIMIT per dialect), so
+            # the query runs unwrapped; the first rows come back as a preview,
+            # which is often the answer itself.
+            rows, columns = _run_sql(database, sql, catalog, schema_name, PREVIEW_ROWS)
+            preview = {"columns": columns, "row_count": len(rows), "data": rows}
             logger.info("set_editor_sql validation passed for SQL (%d chars)", len(sql))
         except Exception as ex:
             logger.warning(
@@ -1727,7 +1735,10 @@ def tool_set_editor_sql(
             }
 
     # Validation passed (or a read-only non-SELECT such as SHOW) — send to frontend
-    return {"action": "set_editor_sql", "sql": sql}
+    result: dict[str, Any] = {"action": "set_editor_sql", "sql": sql}
+    if preview is not None:
+        result["preview"] = preview
+    return result
 
 
 def tool_execute_sql(
@@ -2808,8 +2819,7 @@ def _dispatch(
             catalog=catalog,
         )
         if result.get("action"):
-            result = {"action": "open_sql_tab", "sql": arguments["sql"],
-                      "title": arguments.get("title")}
+            result = {**result, "action": "open_sql_tab", "title": arguments.get("title")}
         return result
 
     if tool_name == "list_dashboards":
